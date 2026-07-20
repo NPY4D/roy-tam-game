@@ -281,11 +281,19 @@
   @keyframes sceneIn{from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:translateY(0);}}
   .scene-in{animation:sceneIn .42s cubic-bezier(.2,.8,.2,1) both;}
 
-  @keyframes dealIn{from{opacity:0; transform:translateY(24px) translateX(30px) rotate(14deg) scale(.75);} to{opacity:1; transform:translateY(0) translateX(0) rotate(0) scale(1);}}
-  .deal-in{animation:dealIn .45s cubic-bezier(.2,.8,.2,1) both;}
+  @keyframes dealIn{
+    0%{opacity:0; transform:translateY(30px) translateX(38px) rotate(16deg) scale(.7);}
+    60%{opacity:1; transform:translateY(-4px) translateX(-3px) rotate(-2deg) scale(1.03);}
+    100%{opacity:1; transform:translateY(0) translateX(0) rotate(0) scale(1);}
+  }
+  .deal-in{animation:dealIn .75s cubic-bezier(.22,.75,.25,1) both;}
 
-  @keyframes flipIn{from{opacity:0; transform:translateY(-16px) rotateY(85deg) scale(.82);} to{opacity:1; transform:translateY(0) rotateY(0) scale(1);}}
-  .flip-in{animation:flipIn .4s ease both; transform-style:preserve-3d;}
+  @keyframes flipIn{
+    0%{opacity:0; transform:translateY(-20px) rotateY(90deg) scale(.8);}
+    55%{opacity:1; transform:translateY(2px) rotateY(-8deg) scale(1.04);}
+    100%{opacity:1; transform:translateY(0) rotateY(0) scale(1);}
+  }
+  .flip-in{animation:flipIn .7s cubic-bezier(.22,.75,.25,1) both; transform-style:preserve-3d;}
 
   /* floating +N / -10 / ย้อนทิศ! / ผ่าน popup shown above the discard pile */
   .score-pop{
@@ -293,36 +301,37 @@
     font-family:'Space Mono',monospace; font-weight:700; font-size:1.15rem;
     color:var(--gold-soft); pointer-events:none; white-space:nowrap; z-index:5;
     text-shadow:0 2px 10px rgba(0,0,0,.7);
-    animation:scorePop 1.15s ease-out forwards;
+    animation:scorePop 1.9s ease-out both;
+    animation-delay:.2s;
   }
   .score-pop.pop-neg{color:var(--danger);}
   .score-pop.pop-special{font-size:.95rem; color:var(--gold-soft);}
   @keyframes scorePop{
-    0%{opacity:0; transform:translate(-50%,8px) scale(.7);}
-    18%{opacity:1; transform:translate(-50%,-10px) scale(1.2);}
-    65%{opacity:1; transform:translate(-50%,-30px) scale(1);}
-    100%{opacity:0; transform:translate(-50%,-50px) scale(.9);}
+    0%{opacity:0; transform:translate(-50%,10px) scale(.7);}
+    22%{opacity:1; transform:translate(-50%,-10px) scale(1.15);}
+    75%{opacity:1; transform:translate(-50%,-32px) scale(1);}
+    100%{opacity:0; transform:translate(-50%,-52px) scale(.92);}
   }
 
   /* center gauge number "bumps" when the total actually changes */
-  @keyframes gaugeBump{0%{transform:scale(1);} 35%{transform:scale(1.22);} 100%{transform:scale(1);}}
-  .gauge .num .v.bump{animation:gaugeBump .5s cubic-bezier(.34,1.56,.64,1);}
+  @keyframes gaugeBump{0%{transform:scale(1);} 40%{transform:scale(1.24);} 70%{transform:scale(.97);} 100%{transform:scale(1);}}
+  .gauge .num .v.bump{animation:gaugeBump .8s cubic-bezier(.22,.75,.25,1); animation-delay:.15s;}
 
-  /* quick golden flash across the table when direction reverses (J) */
+  /* golden flash across the table when direction reverses (J) */
   @keyframes reverseFlash{
     0%{box-shadow:0 0 0 rgba(212,175,55,0), 0 0 0 rgba(212,175,55,0) inset;}
-    40%{box-shadow:0 0 46px rgba(212,175,55,.55), 0 0 24px rgba(212,175,55,.35) inset;}
+    50%{box-shadow:0 0 46px rgba(212,175,55,.55), 0 0 24px rgba(212,175,55,.35) inset;}
     100%{box-shadow:0 0 0 rgba(212,175,55,0), 0 0 0 rgba(212,175,55,0) inset;}
   }
-  .center-table.reverse-flash{animation:reverseFlash .85s ease-out;}
+  .center-table.reverse-flash{animation:reverseFlash 1.4s ease-in-out;}
 
   /* small deck of face-down cards next to the draw button, plus click feedback */
   .draw-deck{position:relative; width:44px; height:64px;}
   .draw-deck .card.small{position:absolute; top:0; left:0;}
   .draw-deck .card.small:nth-child(1){transform:rotate(-4deg);}
   .draw-deck .card.small:nth-child(2){transform:translate(2px,-2px) rotate(3deg);}
-  @keyframes drawPulse{0%{transform:scale(1) rotate(0);} 40%{transform:scale(.9) rotate(-3deg);} 100%{transform:scale(1) rotate(0);}}
-  .btn.drawing{animation:drawPulse .3s ease;}
+  @keyframes drawPulse{0%{transform:scale(1) rotate(0);} 45%{transform:scale(.88) rotate(-4deg);} 100%{transform:scale(1) rotate(0);}}
+  .btn.drawing{animation:drawPulse .5s cubic-bezier(.22,.75,.25,1);}
 
   @keyframes titleShimmer{0%{background-position:0% 0;} 100%{background-position:200% 0;}}
   .brand h1{
