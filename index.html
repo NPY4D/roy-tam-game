@@ -56,6 +56,36 @@
     color:var(--cream);
     min-height:100vh;
     -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+    position:relative;
+  }
+  body::before{
+    content:'';
+    position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:radial-gradient(circle at 20% 15%, rgba(212,175,55,.10), transparent 45%),
+               radial-gradient(circle at 82% 78%, rgba(212,175,55,.08), transparent 40%);
+    animation:ambientDrift 12s ease-in-out infinite alternate;
+  }
+  @keyframes ambientDrift{
+    0%{opacity:.6; transform:translate(0,0) scale(1);}
+    100%{opacity:1; transform:translate(-1.5%,1.5%) scale(1.05);}
+  }
+  .felt-dust{position:fixed; inset:0; overflow:hidden; pointer-events:none; z-index:0;}
+  .felt-dust span{
+    position:absolute; bottom:-10px; width:4px; height:4px; border-radius:50%;
+    background:var(--gold-soft); opacity:.35; filter:blur(.3px);
+    animation:floatUp linear infinite;
+  }
+  @keyframes floatUp{
+    from{transform:translateY(0) translateX(0); opacity:0;}
+    10%{opacity:.5;}
+    90%{opacity:.4;}
+    to{transform:translateY(-108vh) translateX(var(--drift,20px)); opacity:0;}
+  }
+  #app{position:relative; z-index:1;}
+  @media (prefers-reduced-motion:reduce){
+    body::before{animation:none;}
+    .felt-dust{display:none;}
   }
   :focus-visible{outline:2px solid var(--gold); outline-offset:2px;}
   h1,h2,h3{font-family:'Fraunces',serif; margin:0;}
@@ -73,36 +103,55 @@
     border-radius:18px;
     padding:22px;
     box-shadow:0 10px 30px rgba(0,0,0,.35);
+    animation:panelRise .5s cubic-bezier(.2,.8,.2,1) both;
+    transition:border-color .2s ease, box-shadow .2s ease;
   }
   .panel + .panel{margin-top:16px;}
+  .panel:hover{border-color:rgba(212,175,55,.4); box-shadow:0 12px 34px rgba(0,0,0,.4);}
+  @keyframes panelRise{from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);}}
+  .panel:nth-of-type(1){animation-delay:.02s;}
+  .panel:nth-of-type(2){animation-delay:.09s;}
+  .panel:nth-of-type(3){animation-delay:.16s;}
 
   label{display:block; font-size:.85rem; color:var(--muted); margin-bottom:6px;}
   input[type=text]{
     width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(212,175,55,.35);
     background:rgba(0,0,0,.25); color:var(--cream); font-size:1rem; font-family:'Sarabun',sans-serif;
+    transition:border-color .2s ease, box-shadow .2s ease;
   }
+  input[type=text]:focus{border-color:var(--gold); box-shadow:0 0 0 3px rgba(212,175,55,.15); outline:none;}
   input[type=text]::placeholder{color:#5f7568;}
 
   .btn{
     display:inline-flex; align-items:center; justify-content:center; gap:8px;
     padding:12px 20px; border-radius:12px; border:1px solid transparent;
     font-size:1rem; font-weight:600; transition:transform .12s ease, box-shadow .12s ease;
+    position:relative; overflow:hidden;
   }
   .btn-gold{background:linear-gradient(180deg,var(--gold-soft),var(--gold)); color:#2a2005; box-shadow:0 4px 14px rgba(212,175,55,.35);}
-  .btn-gold:hover{transform:translateY(-1px);}
-  .btn-gold:disabled{opacity:.4; cursor:not-allowed; transform:none;}
+  .btn-gold::after{
+    content:''; position:absolute; top:0; left:-60%; width:40%; height:100%;
+    background:linear-gradient(120deg, transparent, rgba(255,255,255,.55), transparent);
+    transform:skewX(-20deg); transition:left .5s ease;
+  }
+  .btn-gold:hover::after{left:130%;}
+  .btn-gold:hover{transform:translateY(-2px); box-shadow:0 8px 20px rgba(212,175,55,.45);}
+  .btn-gold:disabled{opacity:.4; cursor:not-allowed; transform:none; box-shadow:none;}
+  .btn-gold:disabled::after{display:none;}
   .btn-ghost{background:transparent; color:var(--cream); border:1px solid rgba(255,255,255,.25);}
-  .btn-ghost:hover{border-color:var(--gold);}
+  .btn-ghost:hover{border-color:var(--gold); transform:translateY(-2px); background:rgba(212,175,55,.06);}
   .btn-row{display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;}
 
   .choice-cards{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:10px;}
   @media (max-width:480px){.choice-cards{grid-template-columns:1fr;}}
   .choice-card{
     border:1px solid rgba(212,175,55,.3); border-radius:14px; padding:18px; text-align:center;
-    background:rgba(255,255,255,.03); transition:all .15s ease;
+    background:rgba(255,255,255,.03); transition:all .2s cubic-bezier(.2,.8,.2,1); cursor:pointer;
   }
-  .choice-card:hover{border-color:var(--gold); background:rgba(212,175,55,.08);}
-  .choice-card .icon{font-size:1.8rem; margin-bottom:6px;}
+  .choice-card:hover{border-color:var(--gold); background:rgba(212,175,55,.08); transform:translateY(-4px); box-shadow:0 10px 22px rgba(0,0,0,.3);}
+  .choice-card:active{transform:translateY(-1px) scale(.99);}
+  .choice-card .icon{font-size:1.8rem; margin-bottom:6px; display:inline-block; transition:transform .2s ease;}
+  .choice-card:hover .icon{transform:scale(1.15) rotate(-6deg);}
   .choice-card h3{font-size:1.1rem; color:var(--gold-soft);}
   .choice-card p{font-size:.82rem; color:var(--muted); margin:6px 0 0;}
 
@@ -110,14 +159,23 @@
     font-family:'Space Mono',monospace; letter-spacing:6px; font-size:2rem; text-align:center;
     color:var(--gold-soft); padding:14px; border:1px dashed rgba(212,175,55,.4); border-radius:12px;
     background:rgba(0,0,0,.2);
+    animation:codeGlow 2.6s ease-in-out infinite;
+  }
+  @keyframes codeGlow{
+    0%,100%{box-shadow:0 0 0 rgba(212,175,55,0); text-shadow:0 0 8px rgba(212,175,55,.15);}
+    50%{box-shadow:0 0 18px rgba(212,175,55,.18); text-shadow:0 0 16px rgba(212,175,55,.45);}
   }
 
-  .player-row{display:flex; align-items:center; gap:12px; padding:10px 6px; border-bottom:1px solid rgba(255,255,255,.06);}
+  .player-row{display:flex; align-items:center; gap:12px; padding:10px 6px; border-bottom:1px solid rgba(255,255,255,.06);
+    animation:rowSlideIn .35s cubic-bezier(.2,.8,.2,1) both;}
   .player-row:last-child{border-bottom:none;}
+  @keyframes rowSlideIn{from{opacity:0; transform:translateX(-10px);} to{opacity:1; transform:translateX(0);}}
   .avatar{
     width:38px; height:38px; border-radius:50%; background:linear-gradient(150deg,var(--gold-soft),var(--gold));
     color:#2a2005; display:flex; align-items:center; justify-content:center; font-weight:700; flex-shrink:0;
+    box-shadow:0 2px 8px rgba(212,175,55,.3); transition:transform .15s ease;
   }
+  .player-row:hover .avatar{transform:scale(1.08) rotate(-4deg);}
   .player-name{font-weight:600;}
   .tag{font-size:.72rem; color:var(--felt-1); background:var(--gold-soft); padding:2px 8px; border-radius:20px; font-weight:700;}
 
@@ -164,8 +222,9 @@
     width:64px; height:92px; border-radius:9px; background:var(--cream); color:var(--ink);
     display:flex; flex-direction:column; justify-content:space-between; padding:6px;
     box-shadow:0 4px 10px rgba(0,0,0,.4); font-family:'Space Mono',monospace; font-weight:700; font-size:1rem;
-    border:1px solid rgba(0,0,0,.1); user-select:none;
+    border:1px solid rgba(0,0,0,.1); user-select:none; transition:box-shadow .15s ease;
   }
+  .hand-card-wrap:hover .card{box-shadow:0 10px 20px rgba(0,0,0,.5);}
   .card.red{color:var(--red);}
   .card .mid{font-size:1.5rem; text-align:center;}
   .card.back{
@@ -479,7 +538,7 @@ async function setMode(mode){
 async function startGame(){
   const fresh = await loadRoom(S.roomCode);
   if(!fresh || fresh.hostId!==S.myId) return;
-  if(fresh.players.length<4){ S.err='ต้องมีผู้เล่นอย่างน้อย 4 คน'; render(); return; }
+  if(fresh.players.length<2){ S.err='ต้องมีผู้เล่นอย่างน้อย 2 คน'; render(); return; }
   let deck = shuffle(buildDeck());
   fresh.players.forEach(p=>{ p.hand = deck.splice(0,5); p.eliminated=false; });
   fresh.order = fresh.players.map(p=>p.id);
@@ -603,7 +662,7 @@ function renderLanding(){
     <div class="${sceneAnim}">
     <div class="brand">
       <h1>ร้อยแต้ม</h1>
-      <div class="sub">เกมไพ่ออนไลน์ 4-6 คน · ห้ามทำกองกลางเกิน 100</div>
+      <div class="sub">เกมไพ่ออนไลน์ 2-6 คน · ห้ามทำกองกลางเกิน 100</div>
     </div>
     <div class="panel">
       <label for="nameInput">ชื่อของคุณ</label>
@@ -653,7 +712,7 @@ function renderLobby(){
     <div class="brand"><h1>ร้อยแต้ม</h1><div class="sub">ห้องรอผู้เล่น</div></div>
     <div class="panel">
       <div class="room-code">${room.code}</div>
-      <div class="small-note" style="text-align:center;">แชร์รหัสนี้ให้เพื่อน (4-6 คน) เพื่อเข้าร่วม</div>
+      <div class="small-note" style="text-align:center;">แชร์รหัสนี้ให้เพื่อน (2-6 คน) เพื่อเข้าร่วม</div>
     </div>
     <div class="panel">
       <h3 style="color:var(--gold-soft); margin-bottom:8px;">ผู้เล่น (${room.players.length}/6)</h3>
@@ -664,7 +723,7 @@ function renderLobby(){
           ${p.id===room.hostId? '<span class="tag">เจ้าของห้อง</span>':''}
           ${p.id===S.myId? '<span class="tag" style="background:transparent; color:var(--muted); border:1px solid var(--muted);">คุณ</span>':''}
         </div>`).join('')}
-      ${room.players.length<4? `<div class="small-note">ต้องมีอย่างน้อย 4 คนถึงจะเริ่มได้</div>` : ''}
+      ${room.players.length<2? `<div class="small-note">ต้องมีอย่างน้อย 2 คนถึงจะเริ่มได้</div>` : ''}
     </div>
     ${isHost ? `
     <div class="panel">
@@ -680,7 +739,7 @@ function renderLobby(){
         </label>
       </div>
       <div class="btn-row">
-        <button class="btn btn-gold" id="btnStart" ${room.players.length<4?'disabled':''}>เริ่มเกม</button>
+        <button class="btn btn-gold" id="btnStart" ${room.players.length<2?'disabled':''}>เริ่มเกม</button>
         <button class="btn btn-ghost" id="btnLeave">ออกจากห้อง</button>
       </div>
     </div>` : `
@@ -862,6 +921,28 @@ function renderEnded(){
   if(isHost) document.getElementById('btnAgain').onclick = playAgain;
   document.getElementById('btnLeave2').onclick = leaveRoom;
 }
+
+/* ---------- ambient decoration: soft floating gold dust ---------- */
+(function initFeltDust(){
+  const prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(prefersReduced) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'felt-dust';
+  const COUNT = 16;
+  for(let i=0;i<COUNT;i++){
+    const s = document.createElement('span');
+    const left = Math.random()*100;
+    const dur = 9 + Math.random()*10;
+    const delay = Math.random()*10;
+    const drift = (Math.random()*40-20).toFixed(0)+'px';
+    s.style.left = left+'%';
+    s.style.setProperty('--drift', drift);
+    s.style.animationDuration = dur+'s';
+    s.style.animationDelay = '-'+delay+'s';
+    wrap.appendChild(s);
+  }
+  document.body.insertBefore(wrap, document.body.firstChild);
+})();
 
 render();
 </script>
