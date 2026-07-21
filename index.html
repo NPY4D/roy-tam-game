@@ -182,8 +182,9 @@
   .choice-card h3{font-size:1.1rem; color:var(--gold-soft);}
   .choice-card p{font-size:.82rem; color:var(--muted); margin:6px 0 0;}
 
+  .room-code-row{display:flex; align-items:stretch; gap:10px;}
   .room-code{
-    font-family:'Space Mono',monospace; letter-spacing:6px; font-size:2rem; text-align:center;
+    flex:1; font-family:'Space Mono',monospace; letter-spacing:6px; font-size:2rem; text-align:center;
     color:var(--gold-soft); padding:14px; border:1px dashed rgba(212,175,55,.4); border-radius:12px;
     background:rgba(0,0,0,.2);
     animation:codeGlow 2.6s ease-in-out infinite;
@@ -191,6 +192,12 @@
   @keyframes codeGlow{
     0%,100%{box-shadow:0 0 0 rgba(212,175,55,0); text-shadow:0 0 8px rgba(212,175,55,.15);}
     50%{box-shadow:0 0 18px rgba(212,175,55,.18); text-shadow:0 0 16px rgba(212,175,55,.45);}
+  }
+  .copy-code-btn{flex-shrink:0; padding:8px 14px; font-size:.85rem; align-self:center; white-space:nowrap;}
+  .copy-code-btn.copied{border-color:var(--gold); color:var(--gold-soft); background:rgba(212,175,55,.1);}
+  @media (max-width:420px){
+    .room-code{font-size:1.5rem; letter-spacing:4px; padding:12px 8px;}
+    .copy-code-btn{padding:8px 10px; font-size:.78rem;}
   }
 
   .player-row{display:flex; align-items:center; gap:12px; padding:10px 6px; border-bottom:1px solid rgba(255,255,255,.06);}
@@ -1108,7 +1115,10 @@ function renderLobby(){
       <button class="btn btn-ghost" id="btnRulesLobby" style="padding:5px 14px; font-size:.78rem;">📖 ดูกติกาเกม</button>
     </div>
     <div class="panel">
-      <div class="room-code">${room.code}</div>
+      <div class="room-code-row">
+        <div class="room-code">${room.code}</div>
+        <button class="btn btn-ghost copy-code-btn" id="btnCopyCode" title="คัดลอกรหัสห้อง">📋 คัดลอก</button>
+      </div>
       <div class="small-note" style="text-align:center;">แชร์รหัสนี้ให้เพื่อน (2-6 คน) เพื่อเข้าร่วม</div>
     </div>
     <div class="panel">
@@ -1155,9 +1165,30 @@ function renderLobby(){
   }
   document.getElementById('btnLeave').onclick = leaveRoom;
   document.getElementById('btnRulesLobby').onclick = ()=>{ S.showRules = true; render(); };
+  document.getElementById('btnCopyCode').onclick = (e)=> copyRoomCode(room.code, e.currentTarget);
   if(S.showRules){
     document.getElementById('btnCloseRules').onclick = ()=>{ S.showRules = false; render(); };
   }
+}
+
+async function copyRoomCode(code, btn){
+  const original = btn.innerHTML;
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(code);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = code; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    btn.innerHTML = '✅ คัดลอกแล้ว';
+    btn.classList.add('copied');
+  } catch(err){
+    btn.innerHTML = '❌ คัดลอกไม่ได้';
+  }
+  setTimeout(()=>{ btn.innerHTML = original; btn.classList.remove('copied'); }, 1600);
 }
 
 function renderGame(){
