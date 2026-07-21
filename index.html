@@ -695,6 +695,7 @@ function resolveDiscard(fresh, player, card, aceValue){
   else if(card.rank==='Q') value = -10;
   else if(card.rank==='J') value = 0;
   else value = parseInt(card.rank,10);
+  const preTotal = fresh.centerTotal; // total before this card, used for a leak-free shield bounce
   fresh.centerTotal += value;
 
   let desc = `${player.name} ทิ้ง ${card.rank}${card.suit}`;
@@ -705,12 +706,13 @@ function resolveDiscard(fresh, player, card, aceValue){
   fresh.log.unshift(desc + ` → รวม ${fresh.centerTotal}`);
 
   if(fresh.centerTotal > fresh.capTarget && player.shieldOwned && !player.shieldUsed){
-    // shop shield: absorb the bust once, and knock the pile back down below
-    // the cap (not just cap it there) so the next player actually has room
-    // to play instead of being stuck one card away from busting immediately
+    // shop shield: absorb the bust once. Bounce back relative to the total
+    // BEFORE this card was played (preTotal - 5), never relative to capTarget —
+    // snapping to "capTarget - 5" would let players back-calculate the secret
+    // cap in fog mode (bounced_value + 5 = cap). Using preTotal keeps the cap hidden.
     player.shieldUsed = true;
     player.shieldOwned = false;
-    fresh.centerTotal = Math.max(40, fresh.capTarget - 5);
+    fresh.centerTotal = Math.max(0, preTotal - 5);
     fresh.log.unshift(`🛡️ ${player.name} ใช้โล่กันตกรอบ! รอดจากการตกรอบ กองกลางเด้งกลับมาที่ ${fresh.centerTotal}`);
   }
 
@@ -1612,6 +1614,8 @@ function rulesModalHtml(){
 function renderEnded(){
   const room = S.room;
   const isHost = room.hostId===S.myId;
+  const capMode = room.capMode || 'normal';
+  const finalTarget = room.capTarget || 100;
   let title, sub, isWin;
   if(room.mode==='A'){
     const winner = room.players.find(p=>p.id===room.winnerId);
@@ -1620,9 +1624,15 @@ function renderEnded(){
     isWin = !!winner;
   } else {
     const loser = room.players.find(p=>p.id===room.loserId);
-    title = `💥 ${esc(loser?.name||'')} ทำกองกลางเกิน 100`;
+    title = `💥 ${esc(loser?.name||'')} ทำกองกลางเกินเพดาน`;
     sub = 'จบเกมทันทีตามกติกาโหมด B';
     isWin = false;
+  }
+  let revealLine = '';
+  if(capMode==='fog'){
+    revealLine = `🔓 เฉลย! เป้าหมายลับคือ <b style="color:var(--gold-soft)">${finalTarget}</b> แต้ม (ห้ามทำกองกลางเกินตัวเลขนี้)`;
+  } else if(capMode==='shrink'){
+    revealLine = `เพดานสุดท้ายก่อนจบเกม (หดจาก 100): <b style="color:var(--gold-soft)">${finalTarget}</b> แต้ม`;
   }
   app.innerHTML = `
     <div class="${sceneAnim}">
@@ -1637,6 +1647,7 @@ function renderEnded(){
       <h2>${title}</h2>
       <p class="small-note">${sub}</p>
       <div class="small-note" style="margin-top:8px;">แต้มกองกลางสุดท้าย: ${room.centerTotal}</div>
+      ${revealLine ? `<div class="small-note" style="margin-top:6px; font-size:.9rem;">${revealLine}</div>` : ''}
     </div>
     <div class="panel">
       <h3 style="color:var(--gold-soft); margin-bottom:8px;">ผู้เล่น</h3>
