@@ -264,6 +264,7 @@
   }
   .gauge .num .v{font-size:2rem; font-weight:700; color:var(--gold-soft);}
   .gauge .num .lbl{font-size:.65rem; color:var(--muted); letter-spacing:2px;}
+  .gauge .num .fog-lbl{font-size:.7rem; letter-spacing:0; font-weight:600; color:var(--gold-soft);}
 
   .card{
     width:64px; height:92px; border-radius:10px;
@@ -472,6 +473,8 @@ const db = firebase.database();
 const SUITS = ['♠','♥','♦','♣'];
 const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 const TURN_LIMIT_MS = 30000;
+const FOG_MIN = 85;
+const FOG_MAX = 115;
 
 const SHOP_ITEMS = {
   shield: {name:'โล่กันตกรอบ', desc:'กันตกรอบ 1 ครั้งเมื่อกองกลางเกิน 100 — กองกลางจะเด้งกลับมาที่ 95 แล้วเล่นต่อ', cost:16, max:1, icon:'🛡️'},
@@ -566,6 +569,9 @@ function normalizeRoom(r){
   r.drawPile = r.drawPile || [];
   r.discardPile = r.discardPile || [];
   r.log = r.log || [];
+  r.capMode = r.capMode || 'normal';
+  if(r.capTarget===undefined) r.capTarget = 100;
+  r.roundTurnCounter = r.roundTurnCounter || 0;
   if(r.winnerId===undefined) r.winnerId = null;
   if(r.loserId===undefined) r.loserId = null;
   return r;
@@ -698,20 +704,20 @@ function resolveDiscard(fresh, player, card, aceValue){
   if(card.rank==='K') desc += ' (ผ่าน)';
   fresh.log.unshift(desc + ` → รวม ${fresh.centerTotal}`);
 
-  if(fresh.centerTotal > 100 && player.shieldOwned && !player.shieldUsed){
+  if(fresh.centerTotal > fresh.capTarget && player.shieldOwned && !player.shieldUsed){
     // shop shield: absorb the bust once, and knock the pile back down below
-    // 100 (not just cap it there) so the next player actually has room to
-    // play instead of being stuck one card away from busting immediately
+    // the cap (not just cap it there) so the next player actually has room
+    // to play instead of being stuck one card away from busting immediately
     player.shieldUsed = true;
     player.shieldOwned = false;
-    fresh.centerTotal = 95;
-    fresh.log.unshift(`🛡️ ${player.name} ใช้โล่กันตกรอบ! รอดจากการตกรอบ กองกลางเด้งกลับมาที่ 95`);
+    fresh.centerTotal = Math.max(40, fresh.capTarget - 5);
+    fresh.log.unshift(`🛡️ ${player.name} ใช้โล่กันตกรอบ! รอดจากการตกรอบ กองกลางเด้งกลับมาที่ ${fresh.centerTotal}`);
   }
 
-  if(fresh.centerTotal > 100){
+  if(fresh.centerTotal > fresh.capTarget){
     if(fresh.mode==='A'){
       player.eliminated = true;
-      fresh.log.unshift(`💥 ${player.name} ทำกองกลางเกิน 100! ถูกคัดออก`);
+      fresh.log.unshift(`💥 ${player.name} ทำกองกลางเกิน ${fresh.capTarget}! ถูกคัดออก`);
       const active = fresh.players.filter(p=>!p.eliminated);
       if(active.length<=1){
         fresh.status='finished';
@@ -724,7 +730,7 @@ function resolveDiscard(fresh, player, card, aceValue){
     } else {
       fresh.status='finished';
       fresh.loserId = player.id;
-      fresh.log.unshift(`💥 ${player.name} ทำกองกลางเกิน 100! จบเกมทันที`);
+      fresh.log.unshift(`💥 ${player.name} ทำกองกลางเกิน ${fresh.capTarget}! จบเกมทันที`);
     }
   } else {
     // survived the turn — passive income, plus a bonus for playing a card
@@ -738,6 +744,21 @@ function resolveDiscard(fresh, player, card, aceValue){
     fresh.turnPhase='draw';
     fresh.turnStartedAt = Date.now();
   }
+
+  // shrinking-zone: once every active player has had a turn, the ceiling
+  // drops a little, so the game can't just drag on forever
+  if(fresh.capMode==='shrink' && fresh.status==='playing'){
+    fresh.roundTurnCounter = (fresh.roundTurnCounter||0) + 1;
+    const activeCount = fresh.players.filter(p=>!p.eliminated).length;
+    if(activeCount>0 && fresh.roundTurnCounter >= activeCount){
+      fresh.roundTurnCounter = 0;
+      const shrunk = Math.max(60, fresh.capTarget - 5);
+      if(shrunk < fresh.capTarget){
+        fresh.capTarget = shrunk;
+        fresh.log.unshift(`⏳ กรอบหด! เพดานลดลงเหลือ ${fresh.capTarget}`);
+      }
+    }
+  }
   fresh.log = fresh.log.slice(0,24);
 }
 
@@ -746,10 +767,10 @@ async function createRoom(){
   if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
   const code = roomCodeGen();
   const room = {
-    code, hostId:S.myId, mode:'A', status:'lobby',
+    code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby',
     players:[{id:S.myId, name:S.myName.trim(), hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null}],
     order:[], currentIndex:0, direction:1,
-    drawPile:[], discardPile:[], centerTotal:0,
+    drawPile:[], discardPile:[], centerTotal:0, capTarget:100, roundTurnCounter:0,
     turnPhase:'draw', turnStartedAt:0, turnTimeLimit:TURN_LIMIT_MS,
     winnerId:null, loserId:null, log:[`${S.myName.trim()} สร้างห้อง`]
   };
@@ -789,6 +810,14 @@ async function setMode(mode){
   S.room = fresh; render();
 }
 
+async function setCapMode(capMode){
+  const fresh = await loadRoom(S.roomCode);
+  if(!fresh || fresh.hostId!==S.myId) return;
+  fresh.capMode = capMode;
+  await saveRoom(S.roomCode, fresh);
+  S.room = fresh; render();
+}
+
 async function startGame(){
   const fresh = await loadRoom(S.roomCode);
   if(!fresh || fresh.hostId!==S.myId) return;
@@ -805,11 +834,17 @@ async function startGame(){
   fresh.drawPile = deck;
   fresh.discardPile = [];
   fresh.centerTotal = 0;
+  fresh.roundTurnCounter = 0;
+  fresh.capMode = fresh.capMode || 'normal';
+  fresh.capTarget = fresh.capMode==='fog'
+    ? FOG_MIN + Math.floor(Math.random()*(FOG_MAX-FOG_MIN+1))
+    : 100;
   fresh.turnPhase = 'draw';
   fresh.turnStartedAt = Date.now();
   fresh.status = 'playing';
   fresh.winnerId=null; fresh.loserId=null;
-  fresh.log = [`เริ่มเกม! โหมด ${fresh.mode==='A'?'คัดออก':'จบทันที'} — ตาแรกของ ${fresh.players[0].name}`];
+  const capNote = fresh.capMode==='shrink' ? ' (กรอบหด: เพดานจะลดทุกรอบ)' : fresh.capMode==='fog' ? ' (เป้าลับ: ไม่มีใครรู้เพดานจริง)' : '';
+  fresh.log = [`เริ่มเกม! โหมด ${fresh.mode==='A'?'คัดออก':'จบทันที'}${capNote} — ตาแรกของ ${fresh.players[0].name}`];
   await saveRoom(S.roomCode, fresh);
   S.room = fresh; S.screen='game'; render();
 }
@@ -1019,6 +1054,11 @@ function backCardEl(small){
 }
 
 function esc(s){ return (s||'').replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+function capModeLabel(m){
+  if(m==='shrink') return 'กรอบหด';
+  if(m==='fog') return 'เป้าลับ';
+  return 'ปกติ';
+}
 
 // Elements with infinite looping animations (spin, glow, pulse) get torn down
 // and recreated on every re-render since we rebuild innerHTML. A freshly
@@ -1138,11 +1178,28 @@ function renderLobby(){
       <div class="mode-select">
         <label class="mode-opt ${room.mode==='A'?'active':''}">
           <input type="radio" name="mode" value="A" ${room.mode==='A'?'checked':''}>
-          <div><div class="t">โหมด A — คัดออกทีละคน</div><div class="d">ใครเกิน 100 ถูกคัดออก เล่นต่อจนเหลือคนเดียว = ผู้ชนะ</div></div>
+          <div><div class="t">โหมด A — คัดออกทีละคน</div><div class="d">ใครเกินเพดานถูกคัดออก เล่นต่อจนเหลือคนเดียว = ผู้ชนะ</div></div>
         </label>
         <label class="mode-opt ${room.mode==='B'?'active':''}">
           <input type="radio" name="mode" value="B" ${room.mode==='B'?'checked':''}>
-          <div><div class="t">โหมด B — จบทันที</div><div class="d">พอมีคนเกิน 100 คนแรก เกมจบทันที ประกาศผู้แพ้</div></div>
+          <div><div class="t">โหมด B — จบทันที</div><div class="d">พอมีคนเกินเพดานคนแรก เกมจบทันที ประกาศผู้แพ้</div></div>
+        </label>
+      </div>
+    </div>
+    <div class="panel">
+      <h3 style="color:var(--gold-soft); margin-bottom:4px;">กติกาพิเศษ</h3>
+      <div class="mode-select">
+        <label class="mode-opt ${(room.capMode||'normal')==='normal'?'active':''}">
+          <input type="radio" name="capMode" value="normal" ${(room.capMode||'normal')==='normal'?'checked':''}>
+          <div><div class="t">ปกติ</div><div class="d">เพดานคงที่ 100 ตลอดเกม</div></div>
+        </label>
+        <label class="mode-opt ${room.capMode==='shrink'?'active':''}">
+          <input type="radio" name="capMode" value="shrink" ${room.capMode==='shrink'?'checked':''}>
+          <div><div class="t">⏳ กรอบหด</div><div class="d">ทุกครั้งที่ครบ 1 รอบโต๊ะ เพดานลดลง 5 (ต่ำสุด 60) เกมกดดันขึ้นเรื่อยๆ</div></div>
+        </label>
+        <label class="mode-opt ${room.capMode==='fog'?'active':''}">
+          <input type="radio" name="capMode" value="fog" ${room.capMode==='fog'?'checked':''}>
+          <div><div class="t">🌫️ เป้าลับ</div><div class="d">สุ่มเพดานจริงไว้ระหว่าง ${FOG_MIN}-${FOG_MAX} ไม่มีใครรู้ตัวเลข เห็นแค่ระดับความเสี่ยง</div></div>
         </label>
       </div>
       <div class="btn-row">
@@ -1151,7 +1208,8 @@ function renderLobby(){
       </div>
     </div>` : `
     <div class="panel" style="text-align:center; color:var(--muted);">
-      โหมดเกม: <b style="color:var(--gold-soft)">${room.mode==='A'?'คัดออกทีละคน':'จบทันที'}</b><br>
+      โหมดเกม: <b style="color:var(--gold-soft)">${room.mode==='A'?'คัดออกทีละคน':'จบทันที'}</b>
+      · กติกา: <b style="color:var(--gold-soft)">${capModeLabel(room.capMode)}</b><br>
       รอเจ้าของห้องกดเริ่มเกม...
       <div class="btn-row" style="justify-content:center;"><button class="btn btn-ghost" id="btnLeave">ออกจากห้อง</button></div>
     </div>`}
@@ -1161,6 +1219,7 @@ function renderLobby(){
   `;
   if(isHost){
     document.querySelectorAll('input[name=mode]').forEach(r=> r.onchange = e=> setMode(e.target.value));
+    document.querySelectorAll('input[name=capMode]').forEach(r=> r.onchange = e=> setCapMode(e.target.value));
     document.getElementById('btnStart').onclick = startGame;
   }
   document.getElementById('btnLeave').onclick = leaveRoom;
@@ -1200,11 +1259,20 @@ function renderGame(){
   const elapsed = Date.now() - room.turnStartedAt;
   const pct = Math.max(0, 100 - (elapsed/room.turnTimeLimit)*100);
   const topDiscard = room.discardPile[room.discardPile.length-1];
-  const gaugePct = Math.min(100, Math.max(0, room.centerTotal))/100;
+  const capMode = room.capMode || 'normal';
+  const capTarget = room.capTarget || 100;
+  const isFog = capMode==='fog';
+  const gaugeMax = isFog ? FOG_MAX : capTarget;
+  const gaugePct = Math.min(1, Math.max(0, room.centerTotal)/gaugeMax);
   const circumference = 2*Math.PI*60;
   const dash = circumference * gaugePct;
-  const inDanger = room.centerTotal>85;
+  const inDanger = isFog ? room.centerTotal >= FOG_MIN : room.centerTotal > capTarget - 15;
   const gaugeColor = inDanger ? 'var(--danger)' : 'var(--gold)';
+  // fog: show only a qualitative risk zone instead of the real (hidden) cap
+  const fogZone = !isFog ? null
+    : room.centerTotal < FOG_MIN ? {icon:'🟢', text:'ปลอดภัย'}
+    : room.centerTotal < 100 ? {icon:'🟡', text:'เริ่มเสี่ยง'}
+    : {icon:'🔴', text:'อันตรายมาก!'};
 
   // only animate a card when it actually just changed hands, not on every 1s timer tick
   const handGrew = me.hand.length > S._lastHandLen;
@@ -1234,7 +1302,7 @@ function renderGame(){
   app.innerHTML = `
     <div class="${sceneAnim}">
     <div class="top-strip">
-      <span>ห้อง ${room.code} · โหมด ${room.mode==='A'?'คัดออก':'จบทันที'}</span>
+      <span>ห้อง ${room.code} · โหมด ${room.mode==='A'?'คัดออก':'จบทันที'}${capMode!=='normal'?' · '+capModeLabel(capMode):''}</span>
       <span style="display:flex; align-items:center; gap:8px;">
         <button id="btnSound" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;" title="เปิด/ปิดเสียง">${S.soundOn?'🔊':'🔇'}</button>
         <button id="btnRules" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">กติกา</button>
@@ -1263,7 +1331,12 @@ function renderGame(){
           <circle cx="75" cy="75" r="60" stroke="${gaugeColor}" stroke-width="10" fill="none"
             stroke-dasharray="${dash} ${circumference}" stroke-linecap="round"/>
         </svg>
-        <div class="num"><div class="v ${discardChanged?'bump':''}">${room.centerTotal}</div><div class="lbl">/ 100</div></div>
+        <div class="num">
+          <div class="v ${discardChanged?'bump':''}">${room.centerTotal}</div>
+          ${isFog
+            ? `<div class="lbl fog-lbl">${fogZone.icon} ${fogZone.text}</div>`
+            : `<div class="lbl">/ ${capTarget}</div>`}
+        </div>
       </div>
       <div class="discard-stack">
         ${topDiscard? `<div class="${discardChanged?'flip-in':''}">${cardEl(topDiscard)}</div>` : `<div class="card" style="opacity:.3;"></div>`}
@@ -1518,10 +1591,15 @@ function rulesModalHtml(){
             <li><b>K</b>: ผ่าน ไม่บวกแต้ม (+0)</li>
             <li><b>A</b>: เลือกได้ +1 หรือ +11 แต้ม</li>
           </ul>
-          <p>ถ้าใครทิ้งไพ่แล้วกองกลางเกิน 100:</p>
+          <p>ถ้าใครทิ้งไพ่แล้วกองกลางเกินเพดาน:</p>
           <ul style="margin:8px 0; padding-left:18px;">
             <li><b>โหมด A (คัดออก):</b> คนนั้นตกรอบ เล่นต่อจนเหลือคนเดียว = ผู้ชนะ</li>
             <li><b>โหมด B (จบทันที):</b> เกมจบทันที คนนั้นคือผู้แพ้</li>
+          </ul>
+          <p>เจ้าของห้องเลือกกติกาพิเศษเพิ่มได้:</p>
+          <ul style="margin:8px 0; padding-left:18px;">
+            <li><b>⏳ กรอบหด:</b> เพดานเริ่มที่ 100 แล้วลดลง 5 ทุกครั้งที่ครบ 1 รอบโต๊ะ (ต่ำสุด 60)</li>
+            <li><b>🌫️ เป้าลับ:</b> สุ่มเพดานจริงไว้ระหว่าง 85-115 ไม่มีใครรู้ตัวเลข เห็นแค่ระดับความเสี่ยง 🟢🟡🔴</li>
           </ul>
           <p>🛒 <b>ร้านค้า:</b> ได้ชิปฟรีทุกตาที่รอด และได้โบนัสตอนเล่นไพ่เชิงรับ (J/Q/K) เอาชิปไปซื้อไอเทมช่วยเกมได้จากปุ่มลอยมุมจอ ซื้อได้ตลอดเวลาโดยไม่ต้องรอตาตัวเอง</p>
         </div>
