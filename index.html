@@ -262,13 +262,38 @@
   .hand-card-wrap{transition:transform .15s ease; scroll-snap-align:start; flex-shrink:0;}
   .hand-card-wrap:hover{transform:translateY(-10px);}
   .hand-card-wrap button{border:none; background:none; padding:4px;}
-  .drawpile-area{display:flex; align-items:center; gap:14px; justify-content:center; margin-top:6px;}
+  .drawpile-area{display:flex; align-items:center; gap:14px; justify-content:center; margin-top:6px; flex-wrap:wrap;}
 
   .log-panel{margin-top:16px; max-height:150px; overflow-y:auto; font-size:.82rem; color:var(--muted);}
   .log-panel div{padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05);}
 
   .modal-bg{position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:20px; z-index:50;}
   .modal{background:var(--felt-2); border:1px solid var(--gold); border-radius:16px; padding:24px; max-width:360px; width:100%; text-align:center;}
+
+  /* floating shop button — always reachable without interrupting the game */
+  .shop-fab{
+    position:fixed; right:16px; bottom:18px; z-index:40;
+    display:flex; align-items:center; gap:8px;
+    background:linear-gradient(180deg,var(--gold-soft),var(--gold)); color:#2a2005;
+    border:none; border-radius:999px; padding:11px 18px; font-weight:700; font-size:.88rem;
+    font-family:'Sarabun',sans-serif; box-shadow:0 8px 22px rgba(0,0,0,.45);
+    cursor:pointer; transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .shop-fab:hover{transform:translateY(-2px) scale(1.03); box-shadow:0 10px 26px rgba(0,0,0,.5);}
+  .shop-fab:active{transform:scale(.96);}
+  .shop-fab .chip-count{background:rgba(0,0,0,.16); padding:3px 9px; border-radius:999px; font-family:'Space Mono',monospace;}
+
+  .shop-modal{max-width:420px; text-align:left; max-height:82vh; overflow-y:auto;}
+  .shop-item{border:1px solid rgba(212,175,55,.25); border-radius:12px; padding:12px 14px; margin-bottom:10px; background:rgba(0,0,0,.15);}
+  .shop-item-head{display:flex; justify-content:space-between; align-items:center; font-weight:700; color:var(--gold-soft); font-size:.95rem;}
+  .shop-item-desc{font-size:.8rem; color:var(--muted); margin:6px 0 0; line-height:1.5;}
+  .shop-item-foot{display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:10px;}
+  .shop-item-foot .btn{padding:7px 14px; font-size:.82rem;}
+  .swapTargetBtn, .swapCardBtn, .swapSlotBtn{margin-bottom:8px;}
+
+  @media (max-width:420px){
+    .shop-fab{right:12px; bottom:12px; padding:9px 14px; font-size:.8rem;}
+  }
 
   .result-banner{text-align:center; padding:26px; border-radius:18px; margin-bottom:16px; border:1px solid var(--gold);
     background:radial-gradient(ellipse at top, rgba(212,175,55,.18), transparent);}
@@ -395,6 +420,58 @@ const SUITS = ['♠','♥','♦','♣'];
 const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 const TURN_LIMIT_MS = 30000;
 
+const SHOP_ITEMS = {
+  shield: {name:'โล่กันตกรอบ', desc:'กันตกรอบ 1 ครั้งเมื่อกองกลางเกิน 100 — กองกลางจะเด้งกลับมาที่ 95 แล้วเล่นต่อ', cost:16, max:1, icon:'🛡️'},
+  relief: {name:'ยาลดแต้ม -5',  desc:'ใช้ทันที ลดแต้มกองกลางลง 5 แต้ม', cost:10, max:2, icon:'🧪'},
+  swap:   {name:'สลับไพ่ลับ',   desc:'เลือกไพ่ตัวเอง 1 ใบ สลับกับไพ่คู่แข่ง 1 ใบแบบไม่เห็นหน้าไพ่ก่อนสลับ', cost:12, max:2, icon:'🔀'},
+  peek:   {name:'จั่ว 2 เก็บ 1', desc:'ใช้แทนการจั่วปกติในตาตัวเอง — ดูไพ่ 2 ใบ เลือกเก็บ 1 อีกใบไปอยู่ใต้กองจั่ว', cost:7, max:3, icon:'👀'}
+};
+
+/* ---------- sound effects ----------
+   Synthesized with the Web Audio API (no audio files to host/load).
+   Browsers block audio until a user gesture happens on the page, so the
+   AudioContext is created lazily on the first click anywhere and reused. */
+let actx = null;
+function getActx(){
+  if(!actx){
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if(!Ctx) return null;
+    actx = new Ctx();
+  }
+  if(actx.state==='suspended') actx.resume();
+  return actx;
+}
+document.addEventListener('click', ()=>{ getActx(); }, {once:true});
+
+function beep(freq, dur=0.12, type='sine', delay=0, vol=0.16){
+  const ctx = getActx();
+  if(!ctx) return;
+  try{
+    const t0 = ctx.currentTime + delay;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(t0); osc.stop(t0 + dur + 0.03);
+  }catch(e){ /* audio unavailable, fail silently */ }
+}
+function playDrawSound(){
+  if(!S.soundOn) return;
+  beep(280, 0.06, 'square', 0, 0.10);
+}
+function playDiscardSound(rank){
+  if(!S.soundOn) return;
+  if(rank==='J'){ beep(520,.10,'sine'); beep(760,.14,'sine',.09); }        // ย้อนทิศ — two-tone whoosh
+  else if(rank==='Q'){ beep(300,.20,'sawtooth',0,.13); }                    // -10 แต้ม — low buzz
+  else if(rank==='K'){ beep(440,.12,'triangle'); }                          // ผ่าน — soft ping
+  else if(rank==='A'){ beep(660,.10,'sine'); beep(880,.12,'sine',.08); }    // เลือกแต้ม — bright chime
+  else { beep(500,.08,'square',0,.12); }                                   // ปกติ — plain click
+}
+
 function buildDeck(){
   const d = [];
   for(const s of SUITS) for(const r of RANKS) d.push({suit:s, rank:r, id:s+r});
@@ -422,7 +499,16 @@ function roomCodeGen(){
 function normalizeRoom(r){
   if(!r) return r;
   r.players = r.players || [];
-  r.players.forEach(p=>{ p.hand = p.hand || []; });
+  r.players.forEach(p=>{
+    p.hand = p.hand || [];
+    p.chips = p.chips || 0;
+    p.shieldOwned = !!p.shieldOwned;
+    p.shieldUsed = !!p.shieldUsed;
+    p.reliefBought = p.reliefBought || 0;
+    p.swapBought = p.swapBought || 0;
+    p.peekBought = p.peekBought || 0;
+    p.peekPending = p.peekPending || null;
+  });
   r.order = r.order || [];
   r.drawPile = r.drawPile || [];
   r.discardPile = r.discardPile || [];
@@ -444,6 +530,34 @@ async function saveRoom(code, obj){
   }catch(e){ console.error('save failed', e); return false; }
 }
 
+// Race-safe read-modify-write. `set()` after a plain read is a classic
+// check-then-act race: if two clients (e.g. two players discarding, or
+// two people joining at once) both read, then both write, the second
+// write silently clobbers the first. A Firebase transaction re-runs the
+// mutator against the server's latest value if it detects a conflicting
+// write, so concurrent actions resolve safely instead of losing data.
+//
+// `mutator(room)` should mutate `room` in place. Return `false` from the
+// mutator to abort the transaction (e.g. "not your turn") without writing.
+// Resolves to {committed, room} — `room` reflects the current server
+// value whether or not the transaction actually committed.
+async function txRoom(code, mutator){
+  try{
+    const result = await db.ref('rooms/'+code).transaction(raw=>{
+      if(raw===null || raw===undefined) return raw; // room doesn't exist, nothing to do
+      const room = normalizeRoom(raw);
+      const outcome = mutator(room);
+      if(outcome===false) return; // returning undefined aborts the transaction, no write
+      return room;
+    });
+    const room = result.snapshot.exists() ? normalizeRoom(result.snapshot.val()) : null;
+    return { committed: result.committed, room };
+  }catch(e){
+    console.error('transaction failed', e);
+    return { committed:false, room:null };
+  }
+}
+
 /* ---------- app state ---------- */
 const S = {
   screen:'landing', // landing | join | lobby | game | ended
@@ -453,6 +567,10 @@ const S = {
   room:null,
   pollTimer:null,
   aceCardPending:null,
+  showRules:false,
+  showShop:false,
+  swapPending:null,
+  soundOn:true,
   err:'',
   _lastScreen:null,
   _lastHandLen:-1,
@@ -527,6 +645,16 @@ function resolveDiscard(fresh, player, card, aceValue){
   if(card.rank==='K') desc += ' (ผ่าน)';
   fresh.log.unshift(desc + ` → รวม ${fresh.centerTotal}`);
 
+  if(fresh.centerTotal > 100 && player.shieldOwned && !player.shieldUsed){
+    // shop shield: absorb the bust once, and knock the pile back down below
+    // 100 (not just cap it there) so the next player actually has room to
+    // play instead of being stuck one card away from busting immediately
+    player.shieldUsed = true;
+    player.shieldOwned = false;
+    fresh.centerTotal = 95;
+    fresh.log.unshift(`🛡️ ${player.name} ใช้โล่กันตกรอบ! รอดจากการตกรอบ กองกลางเด้งกลับมาที่ 95`);
+  }
+
   if(fresh.centerTotal > 100){
     if(fresh.mode==='A'){
       player.eliminated = true;
@@ -546,6 +674,13 @@ function resolveDiscard(fresh, player, card, aceValue){
       fresh.log.unshift(`💥 ${player.name} ทำกองกลางเกิน 100! จบเกมทันที`);
     }
   } else {
+    // survived the turn — passive income, plus a bonus for playing a card
+    // that didn't grow the pile (J/K stay flat, Q shrinks it)
+    player.chips = (player.chips||0) + 1;
+    if(value <= 0){
+      player.chips += 5;
+      fresh.log.unshift(`💰 ${player.name} ได้ชิป +5 จากการเล่นไพ่เชิงรับ (รวม ${player.chips} ชิป)`);
+    }
     fresh.currentIndex = nextIndex(fresh);
     fresh.turnPhase='draw';
     fresh.turnStartedAt = Date.now();
@@ -559,7 +694,7 @@ async function createRoom(){
   const code = roomCodeGen();
   const room = {
     code, hostId:S.myId, mode:'A', status:'lobby',
-    players:[{id:S.myId, name:S.myName.trim(), hand:[], eliminated:false}],
+    players:[{id:S.myId, name:S.myName.trim(), hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null}],
     order:[], currentIndex:0, direction:1,
     drawPile:[], discardPile:[], centerTotal:0,
     turnPhase:'draw', turnStartedAt:0, turnTimeLimit:TURN_LIMIT_MS,
@@ -575,15 +710,20 @@ async function joinRoom(codeInput){
   const code = codeInput.trim().toUpperCase();
   if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
   if(!code){ S.err='ใส่รหัสห้องก่อนนะ'; render(); return; }
-  const room = await loadRoom(code);
-  if(!room){ S.err='ไม่พบห้องนี้ เช็กรหัสอีกครั้ง'; render(); return; }
-  if(room.status!=='lobby'){ S.err='ห้องนี้เริ่มเกมไปแล้ว'; render(); return; }
-  if(room.players.length>=6){ S.err='ห้องเต็มแล้ว (สูงสุด 6 คน)'; render(); return; }
-  if(room.players.some(p=>p.name===S.myName.trim())){ S.err='มีชื่อนี้ในห้องแล้ว ใช้ชื่ออื่น'; render(); return; }
-  room.players.push({id:S.myId, name:S.myName.trim(), hand:[], eliminated:false});
-  room.log.unshift(`${S.myName.trim()} เข้าร่วมห้อง`);
-  const ok = await saveRoom(code, room);
-  if(!ok){ S.err='เข้าร่วมไม่สำเร็จ ลองใหม่'; render(); return; }
+  const check = await loadRoom(code);
+  if(!check){ S.err='ไม่พบห้องนี้ เช็กรหัสอีกครั้ง'; render(); return; }
+  // two people can hit "join" within the same instant — do the actual
+  // seat-taking inside a transaction so a duplicate name / full room / a
+  // race between two joiners can't silently overwrite each other
+  let joinError = '';
+  const {committed, room} = await txRoom(code, r=>{
+    if(r.status!=='lobby'){ joinError='ห้องนี้เริ่มเกมไปแล้ว'; return false; }
+    if(r.players.length>=6){ joinError='ห้องเต็มแล้ว (สูงสุด 6 คน)'; return false; }
+    if(r.players.some(p=>p.name===S.myName.trim())){ joinError='มีชื่อนี้ในห้องแล้ว ใช้ชื่ออื่น'; return false; }
+    r.players.push({id:S.myId, name:S.myName.trim(), hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null});
+    r.log.unshift(`${S.myName.trim()} เข้าร่วมห้อง`);
+  });
+  if(!committed || !room){ S.err = joinError || 'เข้าร่วมไม่สำเร็จ ลองใหม่'; render(); return; }
   S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
   startPolling(); render();
 }
@@ -601,7 +741,11 @@ async function startGame(){
   if(!fresh || fresh.hostId!==S.myId) return;
   if(fresh.players.length<2){ S.err='ต้องมีผู้เล่นอย่างน้อย 2 คน'; render(); return; }
   let deck = shuffle(buildDeck());
-  fresh.players.forEach(p=>{ p.hand = deck.splice(0,5); p.eliminated=false; });
+  fresh.players.forEach(p=>{
+    p.hand = deck.splice(0,5); p.eliminated=false;
+    p.chips = p.chips||0; p.shieldOwned=false; p.shieldUsed=false;
+    p.reliefBought=0; p.swapBought=0; p.peekBought=0; p.peekPending=null;
+  });
   fresh.order = fresh.players.map(p=>p.id);
   fresh.currentIndex = 0;
   fresh.direction = 1;
@@ -618,58 +762,161 @@ async function startGame(){
 }
 
 async function performDraw(){
-  const fresh = await loadRoom(S.roomCode);
-  if(!fresh || fresh.status!=='playing') return;
-  if(fresh.order[fresh.currentIndex]!==S.myId || fresh.turnPhase!=='draw'){ S.room=fresh; render(); return; }
-  ensureDrawPile(fresh);
-  if(fresh.drawPile.length===0){ S.room=fresh; render(); return; }
-  const card = fresh.drawPile.pop();
-  const me = fresh.players.find(p=>p.id===S.myId);
-  me.hand.push(card);
-  fresh.turnPhase='discard';
-  await saveRoom(S.roomCode, fresh);
-  S.room = fresh; render();
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    if(r.order[r.currentIndex]!==S.myId || r.turnPhase!=='draw') return false;
+    ensureDrawPile(r);
+    if(r.drawPile.length===0) return false;
+    const card = r.drawPile.pop();
+    const me = r.players.find(p=>p.id===S.myId);
+    me.hand.push(card);
+    r.turnPhase='discard';
+  });
+  if(room){ S.room = room; render(); }
 }
 
 async function performDiscard(cardId, aceValue){
-  const fresh = await loadRoom(S.roomCode);
-  if(!fresh || fresh.status!=='playing') return;
-  if(fresh.order[fresh.currentIndex]!==S.myId || fresh.turnPhase!=='discard'){ S.room=fresh; render(); return; }
-  const me = fresh.players.find(p=>p.id===S.myId);
-  const idx = me.hand.findIndex(c=>c.id===cardId);
-  if(idx===-1) return;
-  const card = me.hand.splice(idx,1)[0];
-  resolveDiscard(fresh, me, card, aceValue);
-  await saveRoom(S.roomCode, fresh);
-  S.room = fresh; S.aceCardPending=null; render();
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    if(r.order[r.currentIndex]!==S.myId || r.turnPhase!=='discard') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    const idx = me.hand.findIndex(c=>c.id===cardId);
+    if(idx===-1) return false;
+    const card = me.hand.splice(idx,1)[0];
+    resolveDiscard(r, me, card, aceValue);
+  });
+  if(room){ S.room = room; }
+  S.aceCardPending=null; render();
 }
 
 async function autoPlay(){
-  const fresh = await loadRoom(S.roomCode);
-  if(!fresh || fresh.status!=='playing') return;
-  if(Date.now() - fresh.turnStartedAt < fresh.turnTimeLimit) return;
-  const curId = fresh.order[fresh.currentIndex];
-  const p = fresh.players.find(pl=>pl.id===curId);
-  if(!p) return;
-  if(fresh.turnPhase==='draw'){
-    ensureDrawPile(fresh);
-    if(fresh.drawPile.length>0){
-      p.hand.push(fresh.drawPile.pop());
+  // several clients may notice the timeout in the same second and all call
+  // this at once — the transaction makes sure only one of them actually
+  // advances the turn; the rest see turnStartedAt already reset and abort
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    if(Date.now() - r.turnStartedAt < r.turnTimeLimit) return false;
+    const curId = r.order[r.currentIndex];
+    const p = r.players.find(pl=>pl.id===curId);
+    if(!p) return false;
+    if(r.turnPhase==='draw'){
+      ensureDrawPile(r);
+      if(r.drawPile.length>0){
+        p.hand.push(r.drawPile.pop());
+      }
+      r.turnPhase='discard';
     }
-    fresh.turnPhase='discard';
-  }
-  if(fresh.turnPhase==='discard' && p.hand.length>0){
-    const card = p.hand.shift();
-    fresh.log.unshift(`⏱ หมดเวลา — ${p.name} ทิ้งอัตโนมัติ`);
-    resolveDiscard(fresh, p, card, 1);
-  } else if(fresh.turnPhase==='discard'){
-    fresh.currentIndex = nextIndex(fresh);
-    fresh.turnPhase='draw';
-    fresh.turnStartedAt = Date.now();
-  }
-  await saveRoom(S.roomCode, fresh);
-  S.room = fresh; render();
+    if(r.turnPhase==='discard' && p.hand.length>0){
+      const card = p.hand.shift();
+      r.log.unshift(`⏱ หมดเวลา — ${p.name} ทิ้งอัตโนมัติ`);
+      resolveDiscard(r, p, card, 1);
+    } else if(r.turnPhase==='discard'){
+      r.currentIndex = nextIndex(r);
+      r.turnPhase='draw';
+      r.turnStartedAt = Date.now();
+    }
+  });
+  if(room){ S.room = room; render(); }
 }
+/* ---------- shop actions ---------- */
+async function buyShield(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || me.eliminated) return false;
+    if(me.shieldOwned || me.shieldUsed) return false;
+    if(me.chips < SHOP_ITEMS.shield.cost) return false;
+    me.chips -= SHOP_ITEMS.shield.cost;
+    me.shieldOwned = true;
+    r.log.unshift(`🛡️ ${me.name} ซื้อโล่กันตกรอบ`);
+  });
+  if(room){ S.room = room; render(); }
+}
+
+async function buyRelief(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || me.eliminated) return false;
+    const bought = me.reliefBought||0;
+    if(bought >= SHOP_ITEMS.relief.max) return false;
+    if(me.chips < SHOP_ITEMS.relief.cost) return false;
+    me.chips -= SHOP_ITEMS.relief.cost;
+    me.reliefBought = bought + 1;
+    r.centerTotal = Math.max(0, r.centerTotal - 5);
+    r.log.unshift(`🧪 ${me.name} ใช้ยาลดแต้ม -5 → กองกลางเหลือ ${r.centerTotal}`);
+  });
+  if(room){ S.room = room; render(); }
+}
+
+function openSwap(){
+  const me = S.room.players.find(p=>p.id===S.myId);
+  if(!me || (me.swapBought||0) >= SHOP_ITEMS.swap.max || me.chips < SHOP_ITEMS.swap.cost) return;
+  S.showShop = false;
+  S.swapPending = {step:'target', targetId:null, myCardId:null};
+  render();
+}
+function swapPickTarget(targetId){ S.swapPending = {step:'myCard', targetId, myCardId:null}; render(); }
+function swapPickCard(myCardId){ S.swapPending.step='slot'; S.swapPending.myCardId = myCardId; render(); }
+function swapCancel(){ S.swapPending = null; render(); }
+async function swapConfirm(slotIndex){
+  const {targetId, myCardId} = S.swapPending;
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    const target = r.players.find(p=>p.id===targetId);
+    if(!me || !target || me.eliminated || target.eliminated) return false;
+    const bought = me.swapBought||0;
+    if(bought >= SHOP_ITEMS.swap.max) return false;
+    if(me.chips < SHOP_ITEMS.swap.cost) return false;
+    const myIdx = me.hand.findIndex(c=>c.id===myCardId);
+    if(myIdx===-1) return false;
+    if(slotIndex<0 || slotIndex>=target.hand.length) return false;
+    me.chips -= SHOP_ITEMS.swap.cost;
+    me.swapBought = bought + 1;
+    const myCard = me.hand[myIdx];
+    const theirCard = target.hand[slotIndex];
+    me.hand[myIdx] = theirCard;
+    target.hand[slotIndex] = myCard;
+    r.log.unshift(`🔀 ${me.name} ใช้ไอเทมสลับไพ่ลับกับ ${target.name}`);
+  });
+  S.swapPending = null;
+  if(room){ S.room = room; }
+  render();
+}
+
+async function buyPeek(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    if(r.order[r.currentIndex]!==S.myId || r.turnPhase!=='draw') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me) return false;
+    const bought = me.peekBought||0;
+    if(bought >= SHOP_ITEMS.peek.max) return false;
+    if(me.chips < SHOP_ITEMS.peek.cost) return false;
+    ensureDrawPile(r);
+    if(r.drawPile.length < 2) return false;
+    me.chips -= SHOP_ITEMS.peek.cost;
+    me.peekBought = bought + 1;
+    me.peekPending = [r.drawPile.pop(), r.drawPile.pop()];
+    r.log.unshift(`👀 ${me.name} ใช้ไอเทมจั่ว 2 เก็บ 1`);
+  });
+  if(room){ S.room = room; render(); }
+}
+async function resolvePeek(keepIndex){
+  const {room} = await txRoom(S.roomCode, r=>{
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || !me.peekPending || me.peekPending.length!==2) return false;
+    const keep = me.peekPending[keepIndex];
+    const other = me.peekPending[1-keepIndex];
+    me.hand.push(keep);
+    r.drawPile.unshift(other);
+    me.peekPending = null;
+    r.turnPhase = 'discard';
+  });
+  if(room){ S.room = room; render(); }
+}
+
 let autoPlayLock = false;
 function checkTimeout(room){
   if(!room || room.status!=='playing' || autoPlayLock) return;
@@ -693,7 +940,11 @@ async function playAgain(){
   const fresh = await loadRoom(S.roomCode);
   if(!fresh || fresh.hostId!==S.myId) return;
   fresh.status='lobby';
-  fresh.players.forEach(p=>{ p.hand=[]; p.eliminated=false; });
+  fresh.players.forEach(p=>{
+    p.hand=[]; p.eliminated=false;
+    p.chips=0; p.shieldOwned=false; p.shieldUsed=false;
+    p.reliefBought=0; p.swapBought=0; p.peekBought=0; p.peekPending=null;
+  });
   fresh.winnerId=null; fresh.loserId=null;
   fresh.log=[`เตรียมรอบใหม่`];
   await saveRoom(S.roomCode, fresh);
@@ -806,6 +1057,9 @@ function renderLobby(){
   app.innerHTML = `
     <div class="${sceneAnim}">
     <div class="brand"><h1>ร้อยแต้ม</h1><div class="sub">ห้องรอผู้เล่น</div></div>
+    <div class="btn-row" style="justify-content:center; margin-bottom:6px;">
+      <button class="btn btn-ghost" id="btnRulesLobby" style="padding:5px 14px; font-size:.78rem;">📖 ดูกติกาเกม</button>
+    </div>
     <div class="panel">
       <div class="room-code">${room.code}</div>
       <div class="small-note" style="text-align:center;">แชร์รหัสนี้ให้เพื่อน (2-6 คน) เพื่อเข้าร่วม</div>
@@ -845,6 +1099,7 @@ function renderLobby(){
       <div class="btn-row" style="justify-content:center;"><button class="btn btn-ghost" id="btnLeave">ออกจากห้อง</button></div>
     </div>`}
     ${S.err? `<div class="panel" style="border-color:var(--danger); color:#ffb3ac;">${esc(S.err)}</div>` : ''}
+    ${S.showRules ? rulesModalHtml() : ''}
     </div>
   `;
   if(isHost){
@@ -852,6 +1107,10 @@ function renderLobby(){
     document.getElementById('btnStart').onclick = startGame;
   }
   document.getElementById('btnLeave').onclick = leaveRoom;
+  document.getElementById('btnRulesLobby').onclick = ()=>{ S.showRules = true; render(); };
+  if(S.showRules){
+    document.getElementById('btnCloseRules').onclick = ()=>{ S.showRules = false; render(); };
+  }
 }
 
 function renderGame(){
@@ -874,6 +1133,10 @@ function renderGame(){
   const newestCardId = handGrew ? me.hand[me.hand.length-1].id : null;
   S._lastHandLen = me.hand.length;
   const discardChanged = topDiscard && topDiscard.id !== S._lastDiscardTop;
+  // don't play a catch-up sound if we're just now landing on the game
+  // screen (e.g. rejoining mid-game) — only for discards that happen live
+  const justEnteredGame = sceneAnim === 'scene-in';
+  if(discardChanged && topDiscard && !justEnteredGame) playDiscardSound(topDiscard.rank);
   S._lastDiscardTop = topDiscard ? topDiscard.id : null;
 
   // figure out what just happened to the center total so we can show a
@@ -894,8 +1157,14 @@ function renderGame(){
     <div class="${sceneAnim}">
     <div class="top-strip">
       <span>ห้อง ${room.code} · โหมด ${room.mode==='A'?'คัดออก':'จบทันที'}</span>
-      <span>คุณ: ${esc(me.name)}</span>
+      <span style="display:flex; align-items:center; gap:8px;">
+        <button id="btnSound" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;" title="เปิด/ปิดเสียง">${S.soundOn?'🔊':'🔇'}</button>
+        <button id="btnRules" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">กติกา</button>
+        <span>คุณ: ${esc(me.name)}</span>
+      </span>
     </div>
+
+    <button class="shop-fab" id="btnShop" title="ร้านค้า"><span>🛒</span><span class="chip-count">${me.chips} ชิป</span></button>
 
     <div class="ring">
       ${room.order.map(pid=>{
@@ -932,10 +1201,12 @@ function renderGame(){
       <div class="timer-bar"><div class="timer-fill" style="width:${pct}%"></div></div>
     </div>
 
-    ${isMyTurn && room.turnPhase==='draw' ? `
+    ${isMyTurn && room.turnPhase==='draw' && !me.peekPending ? `
       <div class="drawpile-area">
         <div class="draw-deck">${backCardEl(true)}${backCardEl(true)}</div>
         <button id="btnDraw" class="btn btn-gold">จั่วไพ่ (${room.drawPile.length} ใบเหลือ)</button>
+        ${(me.peekBought||0) < SHOP_ITEMS.peek.max && me.chips >= SHOP_ITEMS.peek.cost ? `
+          <button id="btnPeek" class="btn btn-ghost" style="font-size:.78rem;">${SHOP_ITEMS.peek.icon} จั่ว 2 เก็บ 1 (${SHOP_ITEMS.peek.cost} ชิป)</button>` : ''}
       </div>` : ''}
 
     <div class="hand-area">
@@ -965,14 +1236,21 @@ function renderGame(){
         <button class="btn btn-ghost" id="aceCancel" style="margin-top:10px;">ยกเลิก</button>
       </div>
     </div>` : ''}
+    ${me.peekPending ? peekModalHtml(me) : ''}
+    ${S.swapPending ? swapModalHtml() : ''}
+    ${!me.peekPending && !S.swapPending && S.showShop ? shopModalHtml(me) : ''}
+    ${S.showRules ? rulesModalHtml() : ''}
     </div>
   `;
 
-  if(isMyTurn && room.turnPhase==='draw'){
+  if(isMyTurn && room.turnPhase==='draw' && !me.peekPending){
     document.getElementById('btnDraw').onclick = (e)=>{
       e.currentTarget.classList.add('drawing');
+      playDrawSound();
       performDraw();
     };
+    const peekBtn = document.getElementById('btnPeek');
+    if(peekBtn) peekBtn.onclick = ()=>{ beep(560,.1,'triangle'); buyPeek(); };
   }
   document.querySelectorAll('.cardBtn').forEach(btn=>{
     btn.onclick = ()=>{
@@ -988,6 +1266,190 @@ function renderGame(){
     document.getElementById('aceHigh').onclick = ()=> performDiscard(S.aceCardPending, 11);
     document.getElementById('aceCancel').onclick = ()=>{ S.aceCardPending=null; render(); };
   }
+  document.getElementById('btnSound').onclick = ()=>{ S.soundOn = !S.soundOn; render(); };
+  document.getElementById('btnRules').onclick = ()=>{ S.showRules = true; render(); };
+  if(S.showRules){
+    document.getElementById('btnCloseRules').onclick = ()=>{ S.showRules = false; render(); };
+  }
+
+  document.getElementById('btnShop').onclick = ()=>{ S.showShop = true; render(); };
+  if(me.peekPending){
+    document.querySelectorAll('.peekPickBtn').forEach(b=>{
+      b.onclick = ()=>{ beep(700,.1,'sine'); resolvePeek(parseInt(b.dataset.idx,10)); };
+    });
+  } else if(S.swapPending){
+    const sp = S.swapPending;
+    document.getElementById('swapCancelBtn').onclick = swapCancel;
+    if(sp.step==='target'){
+      document.querySelectorAll('.swapTargetBtn').forEach(b=>{ b.onclick = ()=> swapPickTarget(b.dataset.id); });
+    } else if(sp.step==='myCard'){
+      document.querySelectorAll('.swapCardBtn').forEach(b=>{ b.onclick = ()=> swapPickCard(b.dataset.id); });
+    } else if(sp.step==='slot'){
+      document.querySelectorAll('.swapSlotBtn').forEach(b=>{
+        b.onclick = ()=>{ beep(480,.12,'sawtooth'); swapConfirm(parseInt(b.dataset.idx,10)); };
+      });
+    }
+  } else if(S.showShop){
+    document.getElementById('shopClose').onclick = ()=>{ S.showShop=false; render(); };
+    document.getElementById('shopBg').onclick = (e)=>{ if(e.target.id==='shopBg'){ S.showShop=false; render(); } };
+    const bShield = document.getElementById('buyShield');
+    if(bShield) bShield.onclick = ()=>{ beep(660,.14,'sine'); buyShield(); };
+    const bRelief = document.getElementById('buyRelief');
+    if(bRelief) bRelief.onclick = ()=>{ beep(320,.16,'sawtooth'); buyRelief(); };
+    const bSwap = document.getElementById('buySwap');
+    if(bSwap) bSwap.onclick = openSwap;
+  }
+}
+
+function shopModalHtml(me){
+  const shieldBought = (me.shieldOwned||me.shieldUsed) ? 1 : 0;
+  const shieldMaxed = shieldBought >= SHOP_ITEMS.shield.max;
+  const shieldDisabled = shieldMaxed || me.chips < SHOP_ITEMS.shield.cost;
+  const shieldLabel = me.shieldOwned ? 'ถืออยู่' : me.shieldUsed ? 'ใช้ไปแล้ว' : 'ซื้อ';
+
+  const reliefBought = me.reliefBought||0;
+  const reliefDisabled = reliefBought >= SHOP_ITEMS.relief.max || me.chips < SHOP_ITEMS.relief.cost;
+
+  const swapBought = me.swapBought||0;
+  const swapDisabled = swapBought >= SHOP_ITEMS.swap.max || me.chips < SHOP_ITEMS.swap.cost;
+
+  const peekBought = me.peekBought||0;
+
+  return `
+  <div class="modal-bg" id="shopBg">
+    <div class="modal shop-modal">
+      <h3 style="color:var(--gold-soft); margin-bottom:4px;">🛒 ร้านค้า</h3>
+      <div class="small-note" style="margin-bottom:14px;">คุณมี <b style="color:var(--gold-soft);">${me.chips}</b> ชิป — ซื้อได้ตลอดเวลา ไม่กระทบตาเดินของใคร</div>
+
+      <div class="shop-item">
+        <div class="shop-item-head"><span>${SHOP_ITEMS.shield.icon} ${SHOP_ITEMS.shield.name}</span><span>${SHOP_ITEMS.shield.cost} ชิป</span></div>
+        <p class="shop-item-desc">${SHOP_ITEMS.shield.desc}</p>
+        <div class="shop-item-foot">
+          <span class="small-note" style="margin:0;">${shieldBought}/${SHOP_ITEMS.shield.max} ครั้ง</span>
+          <button class="btn btn-gold" id="buyShield" ${shieldDisabled?'disabled':''}>${shieldLabel}</button>
+        </div>
+      </div>
+
+      <div class="shop-item">
+        <div class="shop-item-head"><span>${SHOP_ITEMS.relief.icon} ${SHOP_ITEMS.relief.name}</span><span>${SHOP_ITEMS.relief.cost} ชิป</span></div>
+        <p class="shop-item-desc">${SHOP_ITEMS.relief.desc}</p>
+        <div class="shop-item-foot">
+          <span class="small-note" style="margin:0;">${reliefBought}/${SHOP_ITEMS.relief.max} ครั้ง</span>
+          <button class="btn btn-gold" id="buyRelief" ${reliefDisabled?'disabled':''}>ใช้เลย</button>
+        </div>
+      </div>
+
+      <div class="shop-item">
+        <div class="shop-item-head"><span>${SHOP_ITEMS.swap.icon} ${SHOP_ITEMS.swap.name}</span><span>${SHOP_ITEMS.swap.cost} ชิป</span></div>
+        <p class="shop-item-desc">${SHOP_ITEMS.swap.desc}</p>
+        <div class="shop-item-foot">
+          <span class="small-note" style="margin:0;">${swapBought}/${SHOP_ITEMS.swap.max} ครั้ง</span>
+          <button class="btn btn-gold" id="buySwap" ${swapDisabled?'disabled':''}>เลือกเป้าหมาย</button>
+        </div>
+      </div>
+
+      <div class="shop-item">
+        <div class="shop-item-head"><span>${SHOP_ITEMS.peek.icon} ${SHOP_ITEMS.peek.name}</span><span>${SHOP_ITEMS.peek.cost} ชิป</span></div>
+        <p class="shop-item-desc">${SHOP_ITEMS.peek.desc}</p>
+        <div class="shop-item-foot">
+          <span class="small-note" style="margin:0;">${peekBought}/${SHOP_ITEMS.peek.max} ครั้ง · ใช้ปุ่มข้างกองจั่วตอนถึงตาคุณ</span>
+        </div>
+      </div>
+
+      <button class="btn btn-ghost" id="shopClose" style="margin-top:6px; width:100%;">ปิด</button>
+    </div>
+  </div>`;
+}
+
+function swapModalHtml(){
+  const sp = S.swapPending;
+  const room = S.room;
+  const me = room.players.find(p=>p.id===S.myId);
+  if(sp.step==='target'){
+    const targets = room.players.filter(p=>p.id!==S.myId && !p.eliminated);
+    return `
+    <div class="modal-bg">
+      <div class="modal">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px;">🔀 เลือกคู่แข่งที่จะสลับไพ่ด้วย</h3>
+        <div class="btn-row" style="flex-direction:column;">
+          ${targets.map(p=>`<button class="btn btn-ghost swapTargetBtn" data-id="${p.id}" style="width:100%;">${esc(p.name)} (${p.hand.length} ใบ)</button>`).join('')}
+        </div>
+        <button class="btn btn-ghost" id="swapCancelBtn" style="margin-top:10px;">ยกเลิก</button>
+      </div>
+    </div>`;
+  }
+  if(sp.step==='myCard'){
+    return `
+    <div class="modal-bg">
+      <div class="modal" style="max-width:420px;">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px;">เลือกไพ่ของคุณที่จะยื่นให้</h3>
+        <div class="hand-scroll" style="justify-content:center;">
+          ${me.hand.map(c=>`
+            <div class="hand-card-wrap">
+              <button class="swapCardBtn" data-id="${c.id}" style="border:none; background:none; padding:4px;">
+                ${cardEl(c)}
+              </button>
+            </div>`).join('')}
+        </div>
+        <button class="btn btn-ghost" id="swapCancelBtn" style="margin-top:10px;">ยกเลิก</button>
+      </div>
+    </div>`;
+  }
+  const target = room.players.find(p=>p.id===sp.targetId);
+  return `
+  <div class="modal-bg">
+    <div class="modal">
+      <h3 style="color:var(--gold-soft); margin-bottom:6px;">เลือกไพ่ของ ${esc(target.name)} แบบไม่เห็นหน้า</h3>
+      <p class="small-note" style="margin-bottom:10px;">เลือกใบไหนก็ได้ ระบบจะสลับให้ทันที</p>
+      <div class="btn-row" style="justify-content:center;">
+        ${target.hand.map((_,i)=>`<button class="btn btn-gold swapSlotBtn" data-idx="${i}">ใบที่ ${i+1}</button>`).join('')}
+      </div>
+      <button class="btn btn-ghost" id="swapCancelBtn" style="margin-top:10px;">ยกเลิก</button>
+    </div>
+  </div>`;
+}
+
+function peekModalHtml(me){
+  return `
+  <div class="modal-bg">
+    <div class="modal">
+      <h3 style="color:var(--gold-soft); margin-bottom:10px;">👀 เลือกไพ่ที่จะเก็บ</h3>
+      <div class="btn-row" style="justify-content:center; gap:20px;">
+        ${me.peekPending.map((c,i)=>`
+          <button class="peekPickBtn" data-idx="${i}" style="border:none; background:none; padding:4px;">
+            ${cardEl(c)}
+          </button>`).join('')}
+      </div>
+      <p class="small-note" style="margin-top:10px;">ใบที่ไม่เลือกจะถูกนำไปไว้ใต้กองจั่ว</p>
+    </div>
+  </div>`;
+}
+
+function rulesModalHtml(){
+  return `
+    <div class="modal-bg">
+      <div class="modal" style="max-width:420px; text-align:left;">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px; text-align:center;">กติกาเกม ร้อยแต้ม</h3>
+        <div style="font-size:.88rem; line-height:1.65;">
+          <p>เป้าหมาย: ห้ามทำให้ <b>กองกลางเกิน 100 แต้ม</b></p>
+          <p>ทุกเทิร์น: จั่วไพ่ 1 ใบ แล้วทิ้งไพ่ 1 ใบจากมือ แต้มของไพ่ที่ทิ้งจะบวกเข้ากองกลาง</p>
+          <ul style="margin:8px 0; padding-left:18px;">
+            <li><b>2–10</b>: บวกแต้มตามหน้าไพ่</li>
+            <li><b>J</b>: ย้อนทิศทางการเล่น (+0 แต้ม)</li>
+            <li><b>Q</b>: ลบ 10 แต้มจากกองกลาง</li>
+            <li><b>K</b>: ผ่าน ไม่บวกแต้ม (+0)</li>
+            <li><b>A</b>: เลือกได้ +1 หรือ +11 แต้ม</li>
+          </ul>
+          <p>ถ้าใครทิ้งไพ่แล้วกองกลางเกิน 100:</p>
+          <ul style="margin:8px 0; padding-left:18px;">
+            <li><b>โหมด A (คัดออก):</b> คนนั้นตกรอบ เล่นต่อจนเหลือคนเดียว = ผู้ชนะ</li>
+            <li><b>โหมด B (จบทันที):</b> เกมจบทันที คนนั้นคือผู้แพ้</li>
+          </ul>
+          <p>🛒 <b>ร้านค้า:</b> ได้ชิปฟรีทุกตาที่รอด และได้โบนัสตอนเล่นไพ่เชิงรับ (J/Q/K) เอาชิปไปซื้อไอเทมช่วยเกมได้จากปุ่มลอยมุมจอ ซื้อได้ตลอดเวลาโดยไม่ต้องรอตาตัวเอง</p>
+        </div>
+        <button class="btn btn-gold" id="btnCloseRules" style="margin-top:10px;">เข้าใจแล้ว</button>
+      </div>
+    </div>`;
 }
 
 function renderEnded(){
