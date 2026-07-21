@@ -46,6 +46,7 @@
     --red:#b23a32;
     --ink:#16211b;
     --danger:#e0483e;
+    --warn:#d9822b;
     --muted:#9fb8a9;
   }
   *{box-sizing:border-box;}
@@ -1264,17 +1265,25 @@ function renderGame(){
   const capMode = room.capMode || 'normal';
   const capTarget = room.capTarget || 100;
   const isFog = capMode==='fog';
+  // headroom before busting — we use the real capTarget for this math (it's
+  // already sitting in the room object we synced), but only ever turn it into
+  // a qualitative label below, never display the number itself in fog mode
+  const diffToCap = capTarget - room.centerTotal;
   const gaugeMax = isFog ? FOG_MAX : capTarget;
   const gaugePct = Math.min(1, Math.max(0, room.centerTotal)/gaugeMax);
   const circumference = 2*Math.PI*60;
   const dash = circumference * gaugePct;
-  const inDanger = isFog ? room.centerTotal >= FOG_MIN : room.centerTotal > capTarget - 15;
-  const gaugeColor = inDanger ? 'var(--danger)' : 'var(--gold)';
-  // fog: show only a qualitative risk zone instead of the real (hidden) cap
+  const inDanger = isFog ? diffToCap <= 5 : room.centerTotal > capTarget - 15;
+  const inWarning = isFog && !inDanger && diffToCap <= 15;
+  const gaugeColor = inDanger ? 'var(--danger)' : inWarning ? 'var(--warn)' : 'var(--gold)';
+  // fog: qualitative risk zone based on actual headroom to the real (hidden)
+  // cap — e.g. secret cap 102: sitting at 99 (diff 3) reads "อันตราย",
+  // sitting at 93 (diff 9) reads "เริ่มเสี่ยง". Never shows the numbers themselves.
   const fogZone = !isFog ? null
-    : room.centerTotal < FOG_MIN ? {icon:'🟢', text:'ปลอดภัย'}
-    : room.centerTotal < 100 ? {icon:'🟡', text:'เริ่มเสี่ยง'}
-    : {icon:'🔴', text:'อันตรายมาก!'};
+    : diffToCap > 15 ? {icon:'🟢', text:'ปลอดภัย'}
+    : diffToCap > 5 ? {icon:'🟡', text:'เริ่มเสี่ยง'}
+    : diffToCap > 0 ? {icon:'🟠', text:'อันตราย'}
+    : {icon:'🔴', text:'อันตรายที่สุด!'};
 
   // only animate a card when it actually just changed hands, not on every 1s timer tick
   const handGrew = me.hand.length > S._lastHandLen;
