@@ -1328,8 +1328,9 @@ function renderGame(){
       <div class="gauge ${inDanger?'danger':''}">
         <svg width="150" height="150">
           <circle cx="75" cy="75" r="60" stroke="rgba(255,255,255,.12)" stroke-width="10" fill="none"/>
+          ${!isFog ? `
           <circle cx="75" cy="75" r="60" stroke="${gaugeColor}" stroke-width="10" fill="none"
-            stroke-dasharray="${dash} ${circumference}" stroke-linecap="round"/>
+            stroke-dasharray="${dash} ${circumference}" stroke-linecap="round"/>` : ''}
         </svg>
         <div class="num">
           <div class="v ${discardChanged?'bump':''}">${room.centerTotal}</div>
