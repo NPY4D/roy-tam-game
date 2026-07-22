@@ -404,6 +404,14 @@
   }
   .flip-in{animation:flipIn .7s cubic-bezier(.22,.75,.25,1) both; transform-style:preserve-3d;}
 
+  /* spy item: card reveal with a spotlight glow burst */
+  @keyframes spyReveal{
+    0%{opacity:0; transform:scale(.6) rotate(-8deg); filter:drop-shadow(0 0 0 rgba(212,175,55,0));}
+    55%{opacity:1; transform:scale(1.12) rotate(3deg); filter:drop-shadow(0 0 22px rgba(212,175,55,.65));}
+    100%{opacity:1; transform:scale(1) rotate(0); filter:drop-shadow(0 0 10px rgba(212,175,55,.35));}
+  }
+  .spy-reveal{animation:spyReveal .6s cubic-bezier(.22,.75,.25,1) both;}
+
   /* floating +N / -10 / ย้อนทิศ! / ผ่าน popup shown above the discard pile */
   .score-pop{
     position:absolute; left:50%; top:-4px; transform:translateX(-50%);
@@ -475,7 +483,7 @@
 
   @media (prefers-reduced-motion:reduce){
     .direction-arrow, .brand h1, .seat.turn, .turn-banner.mine, .gauge.danger, .sparkle{animation:none !important;}
-    .scene-in, .deal-in, .flip-in, .score-pop, .gauge .num .v.bump, .center-table.reverse-flash, .btn.drawing{animation:none !important;}
+    .scene-in, .deal-in, .flip-in, .score-pop, .gauge .num .v.bump, .center-table.reverse-flash, .btn.drawing, .spy-reveal{animation:none !important;}
   }
 </style>
 </head>
@@ -508,10 +516,12 @@ const FOG_MAX = 115;
 const AVATAR_OPTIONS = ['🦁','🐯','🐼','🦊','🐵','🐧','🦄','🐸'];
 
 const SHOP_ITEMS = {
-  shield: {name:'โล่กันตกรอบ', desc:'กันตกรอบ 1 ครั้งเมื่อกองกลางเกิน 100 — กองกลางจะเด้งกลับมาที่ 95 แล้วเล่นต่อ', cost:16, max:1, icon:'🛡️'},
+  shield: {name:'โล่กันตกรอบ', desc:'กันตกรอบ 1 ครั้งเมื่อกองกลางเกินเพดาน — กองกลางจะเด้งกลับลงมา 5 แต้มจากเพดาน แล้วเล่นต่อ', cost:16, max:1, icon:'🛡️'},
   relief: {name:'ยาลดแต้ม -5',  desc:'ใช้ทันที ลดแต้มกองกลางลง 5 แต้ม', cost:10, max:2, icon:'🧪'},
   swap:   {name:'สลับไพ่ลับ',   desc:'เลือกไพ่ตัวเอง 1 ใบ สลับกับไพ่คู่แข่ง 1 ใบแบบไม่เห็นหน้าไพ่ก่อนสลับ', cost:12, max:2, icon:'🔀'},
-  peek:   {name:'จั่ว 2 เก็บ 1', desc:'ใช้แทนการจั่วปกติในตาตัวเอง — ดูไพ่ 2 ใบ เลือกเก็บ 1 อีกใบไปอยู่ใต้กองจั่ว', cost:7, max:3, icon:'👀'}
+  peek:   {name:'จั่ว 2 เก็บ 1', desc:'ใช้แทนการจั่วปกติในตาตัวเอง — ดูไพ่ 2 ใบ เลือกเก็บ 1 อีกใบไปอยู่ใต้กองจั่ว', cost:7, max:3, icon:'👀'},
+  spy:    {name:'ส่องไพ่คู่แข่ง', desc:'เลือกคู่แข่ง 1 คน ระบบสุ่มเปิดไพ่ให้ดู 1 ใบจากมือเขา (เห็นคนเดียว)', cost:6, max:3, icon:'🔍'},
+  mulligan:{name:'คืนไพ่',      desc:'เลือกไพ่ตัวเอง 1 ใบที่ไม่อยากได้ ใส่กลับกองจั่ว แล้วจั่วใบใหม่มาแทนทันที', cost:9, max:2, icon:'🔄'}
 };
 
 /* ---------- sound effects ----------
@@ -557,6 +567,26 @@ function playDiscardSound(rank){
   else if(rank==='K'){ beep(440,.12,'triangle'); }                          // ผ่าน — soft ping
   else if(rank==='A'){ beep(660,.10,'sine'); beep(880,.12,'sine',.08); }    // เลือกแต้ม — bright chime
   else { beep(500,.08,'square',0,.12); }                                   // ปกติ — plain click
+}
+function playShieldSound(){
+  if(!S.soundOn) return;
+  beep(520,.08,'sine',0,.14); beep(740,.10,'sine',.07,.14); beep(1040,.18,'sine',.15,.15); // rising sparkly save
+}
+function playBustSound(){
+  if(!S.soundOn) return;
+  beep(190,.22,'sawtooth',0,.15); beep(120,.30,'sawtooth',.09,.13); // low descending thud
+}
+function playShrinkSound(){
+  if(!S.soundOn) return;
+  beep(620,.09,'triangle',0,.12); beep(440,.14,'triangle',.08,.12); // tightening descending tone
+}
+function playWinFanfare(){
+  if(!S.soundOn) return;
+  beep(523,.14,'sine',0,.15); beep(659,.14,'sine',.12,.15); beep(784,.26,'sine',.24,.16); // C-E-G rising fanfare
+}
+function playLoseSound(){
+  if(!S.soundOn) return;
+  beep(300,.18,'sawtooth',0,.13); beep(220,.24,'sawtooth',.14,.12); beep(150,.34,'sawtooth',.28,.12);
 }
 
 function buildDeck(){
@@ -621,6 +651,9 @@ function normalizeRoom(r){
     p.swapBought = p.swapBought || 0;
     p.peekBought = p.peekBought || 0;
     p.peekPending = p.peekPending || null;
+    p.spyBought = p.spyBought || 0;
+    p.mulliganBought = p.mulliganBought || 0;
+    p.spyResult = p.spyResult || null;
   });
   r.order = r.order || [];
   r.drawPile = r.drawPile || [];
@@ -688,11 +721,14 @@ const S = {
   showRules:false,
   showShop:false,
   swapPending:null,
+  spyPending:null,
+  mulliganPending:null,
   soundOn:true,
   err:'',
   _lastScreen:null,
-  _lastHandLen:-1,
+  _lastHandIds:null,
   _lastDiscardTop:null,
+  _lastLogTop:null,
   _lastCenterTotal:0,
   _lastConfettiKey:null
 };
@@ -839,7 +875,7 @@ async function createRoom(){
   const code = roomCodeGen();
   const room = {
     code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby',
-    players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null}],
+    players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null}],
     order:[], currentIndex:0, direction:1,
     drawPile:[], discardPile:[], centerTotal:0, capTarget:100, roundTurnCounter:0,
     turnPhase:'draw', turnStartedAt:0, turnTimeLimit:TURN_LIMIT_MS,
@@ -866,7 +902,7 @@ async function joinRoom(codeInput){
     if(r.status!=='lobby'){ joinError='ห้องนี้เริ่มเกมไปแล้ว'; return false; }
     if(r.players.length>=6){ joinError='ห้องเต็มแล้ว (สูงสุด 6 คน)'; return false; }
     if(r.players.some(p=>p.name===S.myName.trim())){ joinError='มีชื่อนี้ในห้องแล้ว ใช้ชื่ออื่น'; return false; }
-    r.players.push({id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null});
+    r.players.push({id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null});
     r.log.unshift(`${S.myName.trim()} เข้าร่วมห้อง`);
   });
   if(!committed || !room){ S.err = joinError || 'เข้าร่วมไม่สำเร็จ ลองใหม่'; render(); return; }
@@ -900,6 +936,7 @@ async function startGame(){
     p.hand = deck.splice(0,5); p.eliminated=false;
     p.chips = p.chips||0; p.shieldOwned=false; p.shieldUsed=false;
     p.reliefBought=0; p.swapBought=0; p.peekBought=0; p.peekPending=null;
+    p.spyBought=0; p.mulliganBought=0; p.spyResult=null;
   });
   fresh.order = fresh.players.map(p=>p.id);
   fresh.currentIndex = 0;
@@ -1078,6 +1115,73 @@ async function resolvePeek(keepIndex){
   if(room){ S.room = room; render(); }
 }
 
+function openSpy(){
+  const me = S.room.players.find(p=>p.id===S.myId);
+  if(!me || (me.spyBought||0) >= SHOP_ITEMS.spy.max || me.chips < SHOP_ITEMS.spy.cost) return;
+  S.showShop = false;
+  S.spyPending = true;
+  render();
+}
+function spyCancel(){ S.spyPending = null; render(); }
+async function spyPickTarget(targetId){
+  S.spyPending = null;
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    const target = r.players.find(p=>p.id===targetId);
+    if(!me || !target || me.eliminated || target.eliminated) return false;
+    const bought = me.spyBought||0;
+    if(bought >= SHOP_ITEMS.spy.max) return false;
+    if(me.chips < SHOP_ITEMS.spy.cost) return false;
+    if(!target.hand.length) return false;
+    me.chips -= SHOP_ITEMS.spy.cost;
+    me.spyBought = bought + 1;
+    const randIdx = Math.floor(Math.random()*target.hand.length);
+    me.spyResult = {targetName: target.name, card: target.hand[randIdx]};
+    r.log.unshift(`🔍 ${me.name} ใช้ไอเทมส่องไพ่คู่แข่ง`);
+  });
+  if(room){ S.room = room; render(); }
+}
+async function closeSpyResult(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || !me.spyResult) return false;
+    me.spyResult = null;
+  });
+  if(room){ S.room = room; render(); }
+}
+
+function openMulligan(){
+  const me = S.room.players.find(p=>p.id===S.myId);
+  if(!me || (me.mulliganBought||0) >= SHOP_ITEMS.mulligan.max || me.chips < SHOP_ITEMS.mulligan.cost) return;
+  S.showShop = false;
+  S.mulliganPending = true;
+  render();
+}
+function mulliganCancel(){ S.mulliganPending = null; render(); }
+async function mulliganCard(cardId){
+  S.mulliganPending = null;
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || me.eliminated) return false;
+    const bought = me.mulliganBought||0;
+    if(bought >= SHOP_ITEMS.mulligan.max) return false;
+    if(me.chips < SHOP_ITEMS.mulligan.cost) return false;
+    const idx = me.hand.findIndex(c=>c.id===cardId);
+    if(idx===-1) return false;
+    ensureDrawPile(r);
+    if(!r.drawPile.length) return false;
+    me.chips -= SHOP_ITEMS.mulligan.cost;
+    me.mulliganBought = bought + 1;
+    const oldCard = me.hand[idx];
+    r.drawPile.unshift(oldCard);
+    me.hand[idx] = r.drawPile.pop();
+    r.log.unshift(`🔄 ${me.name} ใช้ไอเทมคืนไพ่`);
+  });
+  if(room){ S.room = room; render(); }
+}
+
 let autoPlayLock = false;
 function checkTimeout(room){
   if(!room || room.status!=='playing' || autoPlayLock) return;
@@ -1105,6 +1209,7 @@ async function playAgain(){
     p.hand=[]; p.eliminated=false;
     p.chips=0; p.shieldOwned=false; p.shieldUsed=false;
     p.reliefBought=0; p.swapBought=0; p.peekBought=0; p.peekPending=null;
+    p.spyBought=0; p.mulliganBought=0; p.spyResult=null;
   });
   fresh.winnerId=null; fresh.loserId=null;
   fresh.log=[`เตรียมรอบใหม่`];
@@ -1385,16 +1490,39 @@ function renderGame(){
     : diffToCap > 0 ? {icon:'🟠', text:'อันตราย'}
     : {icon:'🔴', text:'อันตรายที่สุด!'};
 
-  // only animate a card when it actually just changed hands, not on every 1s timer tick
-  const handGrew = me.hand.length > S._lastHandLen;
-  const newestCardId = handGrew ? me.hand[me.hand.length-1].id : null;
-  S._lastHandLen = me.hand.length;
+  // don't replay entrance/catch-up effects when we're just now landing on
+  // the game screen (e.g. rejoining mid-game) — only for things that
+  // happen live while we're already watching
+  const justEnteredGame = sceneAnim === 'scene-in';
+
+  // animate any hand card that's new since the last render — covers a
+  // normal draw (hand grows), a mulligan (one card swapped for another),
+  // and a shop card-swap landing a new card in your hand (length unchanged
+  // in both of the latter two cases, so length-based detection would miss them)
+  const prevHandIds = S._lastHandIds || new Set();
+  const newCardIds = justEnteredGame ? new Set() : new Set(me.hand.filter(c=>!prevHandIds.has(c.id)).map(c=>c.id));
+  S._lastHandIds = new Set(me.hand.map(c=>c.id));
+
   const discardChanged = topDiscard && topDiscard.id !== S._lastDiscardTop;
   // don't play a catch-up sound if we're just now landing on the game
   // screen (e.g. rejoining mid-game) — only for discards that happen live
-  const justEnteredGame = sceneAnim === 'scene-in';
   if(discardChanged && topDiscard && !justEnteredGame) playDiscardSound(topDiscard.rank);
   S._lastDiscardTop = topDiscard ? topDiscard.id : null;
+
+  // a few "big moment" sounds triggered off new log lines, so they fire
+  // once per event regardless of which client caused it. Scan every line
+  // added since the last render (not just the newest one) so two things
+  // landing on the same turn — e.g. a shield save on the exact turn a
+  // shrink-zone tick happens — both still get their sound.
+  const prevLogTop = S._lastLogTop;
+  const newLogLines = [];
+  for(let i=0; i<room.log.length && i<6 && room.log[i]!==prevLogTop; i++) newLogLines.push(room.log[i]);
+  if(newLogLines.length && !justEnteredGame){
+    if(newLogLines.some(l=>l.startsWith('🛡️'))) playShieldSound();
+    else if(newLogLines.some(l=>l.startsWith('💥'))) playBustSound();
+    if(newLogLines.some(l=>l.startsWith('⏳'))) playShrinkSound();
+  }
+  S._lastLogTop = room.log[0] || null;
 
   // figure out what just happened to the center total so we can show a
   // floating "+7" / "-10" / "ย้อนทิศ!" / "ผ่าน" popup and bump the gauge —
@@ -1477,7 +1605,7 @@ function renderGame(){
       <label>ไพ่ในมือของคุณ (${me.hand.length} ใบ)</label>
       <div class="hand-scroll">
         ${me.hand.map(c=>`
-          <div class="hand-card-wrap ${c.id===newestCardId?'deal-in':''}">
+          <div class="hand-card-wrap ${newCardIds.has(c.id)?'deal-in':''}">
             <button class="cardBtn" data-id="${c.id}" ${isMyTurn && room.turnPhase==='discard' ? '' : 'disabled style="opacity:.55; cursor:default;"'}>
               ${cardEl(c)}
             </button>
@@ -1502,7 +1630,10 @@ function renderGame(){
     </div>` : ''}
     ${me.peekPending ? peekModalHtml(me) : ''}
     ${S.swapPending ? swapModalHtml() : ''}
-    ${!me.peekPending && !S.swapPending && S.showShop ? shopModalHtml(me) : ''}
+    ${S.spyPending ? spyModalHtml() : ''}
+    ${me.spyResult ? spyResultModalHtml(me) : ''}
+    ${S.mulliganPending ? mulliganModalHtml(me) : ''}
+    ${!me.peekPending && !S.swapPending && !S.spyPending && !me.spyResult && !S.mulliganPending && S.showShop ? shopModalHtml(me) : ''}
     ${S.showRules ? rulesModalHtml() : ''}
     </div>
   `;
@@ -1553,6 +1684,18 @@ function renderGame(){
         b.onclick = ()=>{ beep(480,.12,'sawtooth'); swapConfirm(parseInt(b.dataset.idx,10)); };
       });
     }
+  } else if(S.spyPending){
+    document.getElementById('spyCancelBtn').onclick = spyCancel;
+    document.querySelectorAll('.spyTargetBtn').forEach(b=>{
+      b.onclick = ()=>{ beep(560,.1,'sine'); spyPickTarget(b.dataset.id); };
+    });
+  } else if(me.spyResult){
+    document.getElementById('spyResultClose').onclick = closeSpyResult;
+  } else if(S.mulliganPending){
+    document.getElementById('mulliganCancelBtn').onclick = mulliganCancel;
+    document.querySelectorAll('.mulliganCardBtn').forEach(b=>{
+      b.onclick = ()=>{ beep(400,.1,'triangle'); mulliganCard(b.dataset.id); };
+    });
   } else if(S.showShop){
     document.getElementById('shopClose').onclick = ()=>{ S.showShop=false; render(); };
     document.getElementById('shopBg').onclick = (e)=>{ if(e.target.id==='shopBg'){ S.showShop=false; render(); } };
@@ -1562,6 +1705,10 @@ function renderGame(){
     if(bRelief) bRelief.onclick = ()=>{ beep(320,.16,'sawtooth'); buyRelief(); };
     const bSwap = document.getElementById('buySwap');
     if(bSwap) bSwap.onclick = openSwap;
+    const bSpy = document.getElementById('buySpy');
+    if(bSpy) bSpy.onclick = openSpy;
+    const bMulligan = document.getElementById('buyMulligan');
+    if(bMulligan) bMulligan.onclick = openMulligan;
   }
 }
 
@@ -1578,6 +1725,12 @@ function shopModalHtml(me){
   const swapDisabled = swapBought >= SHOP_ITEMS.swap.max || me.chips < SHOP_ITEMS.swap.cost;
 
   const peekBought = me.peekBought||0;
+
+  const spyBought = me.spyBought||0;
+  const spyDisabled = spyBought >= SHOP_ITEMS.spy.max || me.chips < SHOP_ITEMS.spy.cost;
+
+  const mulliganBought = me.mulliganBought||0;
+  const mulliganDisabled = mulliganBought >= SHOP_ITEMS.mulligan.max || me.chips < SHOP_ITEMS.mulligan.cost;
 
   return `
   <div class="modal-bg" id="shopBg">
@@ -1617,6 +1770,24 @@ function shopModalHtml(me){
         <p class="shop-item-desc">${SHOP_ITEMS.peek.desc}</p>
         <div class="shop-item-foot">
           <span class="small-note" style="margin:0;">${peekBought}/${SHOP_ITEMS.peek.max} ครั้ง · ใช้ปุ่มข้างกองจั่วตอนถึงตาคุณ</span>
+        </div>
+      </div>
+
+      <div class="shop-item">
+        <div class="shop-item-head"><span>${SHOP_ITEMS.spy.icon} ${SHOP_ITEMS.spy.name}</span><span>${SHOP_ITEMS.spy.cost} ชิป</span></div>
+        <p class="shop-item-desc">${SHOP_ITEMS.spy.desc}</p>
+        <div class="shop-item-foot">
+          <span class="small-note" style="margin:0;">${spyBought}/${SHOP_ITEMS.spy.max} ครั้ง</span>
+          <button class="btn btn-gold" id="buySpy" ${spyDisabled?'disabled':''}>เลือกเป้าหมาย</button>
+        </div>
+      </div>
+
+      <div class="shop-item">
+        <div class="shop-item-head"><span>${SHOP_ITEMS.mulligan.icon} ${SHOP_ITEMS.mulligan.name}</span><span>${SHOP_ITEMS.mulligan.cost} ชิป</span></div>
+        <p class="shop-item-desc">${SHOP_ITEMS.mulligan.desc}</p>
+        <div class="shop-item-foot">
+          <span class="small-note" style="margin:0;">${mulliganBought}/${SHOP_ITEMS.mulligan.max} ครั้ง</span>
+          <button class="btn btn-gold" id="buyMulligan" ${mulliganDisabled?'disabled':''}>เลือกไพ่</button>
         </div>
       </div>
 
@@ -1689,6 +1860,56 @@ function peekModalHtml(me){
   </div>`;
 }
 
+function spyModalHtml(){
+  const room = S.room;
+  const targets = room.players.filter(p=>p.id!==S.myId && !p.eliminated);
+  return `
+  <div class="modal-bg">
+    <div class="modal">
+      <h3 style="color:var(--gold-soft); margin-bottom:10px;">🔍 เลือกคู่แข่งที่จะแอบดูไพ่</h3>
+      <p class="small-note" style="margin-bottom:10px;">ระบบจะสุ่มเปิดไพ่ 1 ใบจากมือเขาให้ดู เห็นคนเดียว</p>
+      <div class="btn-row" style="flex-direction:column;">
+        ${targets.map(p=>`<button class="btn btn-ghost spyTargetBtn" data-id="${p.id}" style="width:100%;">${p.avatar||''} ${esc(p.name)} (${p.hand.length} ใบ)</button>`).join('')}
+      </div>
+      <button class="btn btn-ghost" id="spyCancelBtn" style="margin-top:10px;">ยกเลิก</button>
+    </div>
+  </div>`;
+}
+
+function spyResultModalHtml(me){
+  const r = me.spyResult;
+  return `
+  <div class="modal-bg">
+    <div class="modal">
+      <h3 style="color:var(--gold-soft); margin-bottom:6px;">🔍 แอบเห็นไพ่ของ ${esc(r.targetName)}</h3>
+      <p class="small-note" style="margin-bottom:14px;">สุ่มได้ 1 ใบจากมือเขา — ข้อมูลนี้เห็นแค่คุณคนเดียว</p>
+      <div class="btn-row" style="justify-content:center;">
+        <div class="spy-reveal">${cardEl(r.card)}</div>
+      </div>
+      <button class="btn btn-gold" id="spyResultClose" style="margin-top:14px;">รับทราบ</button>
+    </div>
+  </div>`;
+}
+
+function mulliganModalHtml(me){
+  return `
+  <div class="modal-bg">
+    <div class="modal" style="max-width:420px;">
+      <h3 style="color:var(--gold-soft); margin-bottom:10px;">🔄 เลือกไพ่ที่จะคืน</h3>
+      <p class="small-note" style="margin-bottom:6px;">ใบที่เลือกจะกลับเข้ากองจั่ว แล้วจั่วใบใหม่มาแทนทันที</p>
+      <div class="hand-scroll" style="justify-content:center;">
+        ${me.hand.map(c=>`
+          <div class="hand-card-wrap">
+            <button class="mulliganCardBtn" data-id="${c.id}" style="border:none; background:none; padding:4px;">
+              ${cardEl(c)}
+            </button>
+          </div>`).join('')}
+      </div>
+      <button class="btn btn-ghost" id="mulliganCancelBtn" style="margin-top:10px;">ยกเลิก</button>
+    </div>
+  </div>`;
+}
+
 function rulesModalHtml(){
   return `
     <div class="modal-bg">
@@ -1714,7 +1935,7 @@ function rulesModalHtml(){
             <li><b>⏳ กรอบหด:</b> เพดานเริ่มที่ 100 แล้วลดลง 5 ทุกครั้งที่ครบ 1 รอบโต๊ะ (ต่ำสุด 60)</li>
             <li><b>🌫️ เป้าลับ:</b> สุ่มเพดานจริงไว้ระหว่าง 85-115 ไม่มีใครรู้ตัวเลข เห็นแค่ระดับความเสี่ยง 🟢🟡🔴</li>
           </ul>
-          <p>🛒 <b>ร้านค้า:</b> ได้ชิปฟรีทุกตาที่รอด และได้โบนัสตอนเล่นไพ่เชิงรับ (J/Q/K) เอาชิปไปซื้อไอเทมช่วยเกมได้จากปุ่มลอยมุมจอ ซื้อได้ตลอดเวลาโดยไม่ต้องรอตาตัวเอง</p>
+          <p>🛒 <b>ร้านค้า:</b> ได้ชิปฟรีทุกตาที่รอด และได้โบนัสตอนเล่นไพ่เชิงรับ (J/Q/K) เอาชิปไปซื้อไอเทมช่วยเกมได้จากปุ่มลอยมุมจอ (โล่/ยาลดแต้ม/สลับไพ่/จั่ว2เก็บ1/ส่องไพ่คู่แข่ง/คืนไพ่) ซื้อได้ตลอดเวลาโดยไม่ต้องรอตาตัวเอง (ยกเว้นจั่ว 2 เก็บ 1 ที่ต้องรอตาตัวเอง)</p>
         </div>
         <button class="btn btn-gold" id="btnCloseRules" style="margin-top:10px;">เข้าใจแล้ว</button>
       </div>
@@ -1744,12 +1965,11 @@ function renderEnded(){
   } else if(capMode==='shrink'){
     revealLine = `เพดานสุดท้ายก่อนจบเกม (หดจาก 100): <b style="color:var(--gold-soft)">${finalTarget}</b> แต้ม`;
   }
-  if(isWin){
-    const confettiKey = room.code + '_' + room.winnerId;
-    if(S._lastConfettiKey !== confettiKey){
-      S._lastConfettiKey = confettiKey;
-      fireConfetti();
-    }
+  const endKey = room.code + '_' + (room.winnerId || room.loserId || 'x');
+  if(S._lastConfettiKey !== endKey){
+    S._lastConfettiKey = endKey;
+    if(isWin){ fireConfetti(); playWinFanfare(); }
+    else { playLoseSound(); }
   }
   app.innerHTML = `
     <div class="${sceneAnim}">
