@@ -172,6 +172,35 @@
 
   .choice-cards{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:10px;}
   @media (max-width:480px){.choice-cards{grid-template-columns:1fr;}}
+  .avatar-picker{display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;}
+  .avatar-opt{
+    width:44px; height:44px; border-radius:50%; font-size:1.3rem;
+    background:rgba(255,255,255,.04); border:2px solid rgba(212,175,55,.25);
+    display:flex; align-items:center; justify-content:center; transition:all .15s ease;
+  }
+  .avatar-opt:hover{border-color:rgba(212,175,55,.6); transform:translateY(-2px);}
+  .avatar-opt.active{border-color:var(--gold); background:rgba(212,175,55,.18); box-shadow:0 0 0 3px rgba(212,175,55,.18);}
+  .seat-avatar{margin:0 auto 6px;}
+
+  .confetti-burst{position:fixed; inset:0; pointer-events:none; z-index:60; overflow:hidden;}
+  .confetti-burst span{
+    position:absolute; top:-24px; width:9px; height:14px; opacity:.95;
+    animation:confettiFall linear forwards;
+  }
+  @keyframes confettiFall{
+    0%{transform:translateY(0) translateX(0) rotate(0deg); opacity:1;}
+    100%{transform:translateY(108vh) translateX(var(--drift)) rotate(var(--rot)); opacity:.85;}
+  }
+  .spinner{
+    width:36px; height:36px; border-radius:50%;
+    border:3px solid rgba(212,175,55,.25); border-top-color:var(--gold);
+    animation:spinRotate .8s linear infinite;
+  }
+  @keyframes spinRotate{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce){
+    .confetti-burst{display:none;}
+  }
+
   .choice-card{
     border:1px solid rgba(212,175,55,.3); border-radius:14px; padding:18px; text-align:center;
     background:rgba(255,255,255,.03); transition:all .2s cubic-bezier(.2,.8,.2,1); cursor:pointer;
@@ -476,6 +505,7 @@ const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 const TURN_LIMIT_MS = 30000;
 const FOG_MIN = 85;
 const FOG_MAX = 115;
+const AVATAR_OPTIONS = ['🦁','🐯','🐼','🦊','🐵','🐧','🦄','🐸'];
 
 const SHOP_ITEMS = {
   shield: {name:'โล่กันตกรอบ', desc:'กันตกรอบ 1 ครั้งเมื่อกองกลางเกิน 100 — กองกลางจะเด้งกลับมาที่ 95 แล้วเล่นต่อ', cost:16, max:1, icon:'🛡️'},
@@ -544,6 +574,31 @@ function shuffle(arr){
 }
 function isRed(suit){ return suit==='♥'||suit==='♦'; }
 function uid(){ return 'p_' + Math.random().toString(36).slice(2,10); }
+
+/* ---------- reconnect: remember the last room so a refresh/dropped wifi
+   doesn't kick the player out of an in-progress game ---------- */
+const SESSION_KEY = 'roiTaemSession_v1';
+const SESSION_MAX_AGE_MS = 6*60*60*1000; // 6 hours
+function saveSession(){
+  try{
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      roomCode:S.roomCode, myId:S.myId, myName:S.myName, myAvatar:S.myAvatar, ts:Date.now()
+    }));
+  }catch(e){}
+}
+function clearSession(){
+  try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+}
+function loadSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_KEY);
+    if(!raw) return null;
+    const data = JSON.parse(raw);
+    if(!data || !data.roomCode || !data.myId) return null;
+    if(Date.now() - (data.ts||0) > SESSION_MAX_AGE_MS) return null;
+    return data;
+  }catch(e){ return null; }
+}
 function roomCodeGen(){
   const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let c=''; for(let i=0;i<5;i++) c+=chars[Math.floor(Math.random()*chars.length)];
@@ -558,6 +613,7 @@ function normalizeRoom(r){
   r.players = r.players || [];
   r.players.forEach(p=>{
     p.hand = p.hand || [];
+    p.avatar = p.avatar || '🎲';
     p.chips = p.chips || 0;
     p.shieldOwned = !!p.shieldOwned;
     p.shieldUsed = !!p.shieldUsed;
@@ -570,6 +626,7 @@ function normalizeRoom(r){
   r.drawPile = r.drawPile || [];
   r.discardPile = r.discardPile || [];
   r.log = r.log || [];
+  r.stats = r.stats || {};
   r.capMode = r.capMode || 'normal';
   if(r.capTarget===undefined) r.capTarget = 100;
   r.roundTurnCounter = r.roundTurnCounter || 0;
@@ -623,6 +680,7 @@ const S = {
   screen:'landing', // landing | join | lobby | game | ended
   myId: uid(),
   myName:'',
+  myAvatar: AVATAR_OPTIONS[0],
   roomCode:'',
   room:null,
   pollTimer:null,
@@ -635,7 +693,8 @@ const S = {
   _lastScreen:null,
   _lastHandLen:-1,
   _lastDiscardTop:null,
-  _lastCenterTotal:0
+  _lastCenterTotal:0,
+  _lastConfettiKey:null
 };
 let sceneAnim = '';
 
@@ -649,8 +708,9 @@ function startPolling(){
     if(!snap.exists()) return;
     const fresh = normalizeRoom(snap.val());
     S.room = fresh;
-    if(S.screen==='lobby' && fresh.status==='playing') S.screen='game';
-    if(S.screen==='game' && fresh.status==='finished') S.screen='ended';
+    if(fresh.status==='playing' && (S.screen==='lobby' || S.screen==='ended')) S.screen='game';
+    if(fresh.status==='finished' && S.screen==='game') S.screen='ended';
+    if(fresh.status==='lobby' && (S.screen==='game' || S.screen==='ended')) S.screen='lobby';
     render();
   });
   // local 1s tick just to advance the countdown bar and trigger timeouts —
@@ -725,6 +785,11 @@ function resolveDiscard(fresh, player, card, aceValue){
       if(active.length<=1){
         fresh.status='finished';
         fresh.winnerId = active.length===1 ? active[0].id : null;
+        fresh.stats = fresh.stats || {};
+        if(fresh.winnerId){
+          fresh.stats[fresh.winnerId] = fresh.stats[fresh.winnerId] || {wins:0,losses:0};
+          fresh.stats[fresh.winnerId].wins++;
+        }
       } else {
         fresh.currentIndex = nextIndex(fresh);
         fresh.turnPhase='draw';
@@ -733,6 +798,9 @@ function resolveDiscard(fresh, player, card, aceValue){
     } else {
       fresh.status='finished';
       fresh.loserId = player.id;
+      fresh.stats = fresh.stats || {};
+      fresh.stats[player.id] = fresh.stats[player.id] || {wins:0,losses:0};
+      fresh.stats[player.id].losses++;
       fresh.log.unshift(`💥 ${player.name} ทำกองกลางเกิน ${fresh.capTarget}! จบเกมทันที`);
     }
   } else {
@@ -771,15 +839,16 @@ async function createRoom(){
   const code = roomCodeGen();
   const room = {
     code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby',
-    players:[{id:S.myId, name:S.myName.trim(), hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null}],
+    players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null}],
     order:[], currentIndex:0, direction:1,
     drawPile:[], discardPile:[], centerTotal:0, capTarget:100, roundTurnCounter:0,
     turnPhase:'draw', turnStartedAt:0, turnTimeLimit:TURN_LIMIT_MS,
-    winnerId:null, loserId:null, log:[`${S.myName.trim()} สร้างห้อง`]
+    winnerId:null, loserId:null, stats:{}, log:[`${S.myName.trim()} สร้างห้อง`]
   };
   const ok = await saveRoom(code, room);
   if(!ok){ S.err='สร้างห้องไม่สำเร็จ ลองใหม่'; render(); return; }
   S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
+  saveSession();
   startPolling(); render();
 }
 
@@ -797,11 +866,12 @@ async function joinRoom(codeInput){
     if(r.status!=='lobby'){ joinError='ห้องนี้เริ่มเกมไปแล้ว'; return false; }
     if(r.players.length>=6){ joinError='ห้องเต็มแล้ว (สูงสุด 6 คน)'; return false; }
     if(r.players.some(p=>p.name===S.myName.trim())){ joinError='มีชื่อนี้ในห้องแล้ว ใช้ชื่ออื่น'; return false; }
-    r.players.push({id:S.myId, name:S.myName.trim(), hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null});
+    r.players.push({id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null});
     r.log.unshift(`${S.myName.trim()} เข้าร่วมห้อง`);
   });
   if(!committed || !room){ S.err = joinError || 'เข้าร่วมไม่สำเร็จ ลองใหม่'; render(); return; }
   S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
+  saveSession();
   startPolling(); render();
 }
 
@@ -1044,6 +1114,7 @@ async function playAgain(){
 
 function leaveRoom(){
   stopPolling();
+  clearSession();
   S.roomCode=''; S.room=null; S.screen='landing'; render();
 }
 
@@ -1057,6 +1128,28 @@ function backCardEl(small){
 }
 
 function esc(s){ return (s||'').replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+
+function fireConfetti(){
+  const prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(prefersReduced) return;
+  const colors = ['#d4af37','#eecf82','#e0483e','#2ecc71','#4aa8ff','#faf6ea'];
+  const wrap = document.createElement('div');
+  wrap.className = 'confetti-burst';
+  const COUNT = 70;
+  for(let i=0;i<COUNT;i++){
+    const s = document.createElement('span');
+    s.style.left = (Math.random()*100)+'%';
+    s.style.background = colors[Math.floor(Math.random()*colors.length)];
+    s.style.animationDuration = (2.2 + Math.random()*1.6)+'s';
+    s.style.animationDelay = (Math.random()*0.5)+'s';
+    s.style.setProperty('--rot', (Math.random()*720-360)+'deg');
+    s.style.setProperty('--drift', (Math.random()*160-80)+'px');
+    if(Math.random()>0.5) s.style.borderRadius = '50%';
+    wrap.appendChild(s);
+  }
+  document.body.appendChild(wrap);
+  setTimeout(()=>{ wrap.remove(); }, 4200);
+}
 function capModeLabel(m){
   if(m==='shrink') return 'กรอบหด';
   if(m==='fog') return 'เป้าลับ';
@@ -1111,6 +1204,10 @@ function renderLanding(){
     <div class="panel">
       <label for="nameInput">ชื่อของคุณ</label>
       <input id="nameInput" type="text" placeholder="ใส่ชื่อเล่น..." value="${esc(S.myName)}" maxlength="16">
+      <label style="margin-top:14px; display:block;">เลือกอวาตาร์</label>
+      <div class="avatar-picker">
+        ${AVATAR_OPTIONS.map(a=>`<button class="avatar-opt ${a===S.myAvatar?'active':''}" data-avatar="${a}">${a}</button>`).join('')}
+      </div>
     </div>
     <div class="choice-cards">
       <div class="choice-card" id="btnCreate">
@@ -1136,6 +1233,9 @@ function renderLanding(){
   `;
   const nameInput = document.getElementById('nameInput');
   nameInput.oninput = e=>{ S.myName = e.target.value; };
+  document.querySelectorAll('.avatar-opt').forEach(btn=>{
+    btn.onclick = ()=>{ S.myAvatar = btn.dataset.avatar; render(); };
+  });
   document.getElementById('btnCreate').onclick = ()=>{ if(!S.myName.trim()){S.err='ใส่ชื่อก่อนนะ'; render(); return;} createRoom(); };
   document.getElementById('btnJoin').onclick = ()=>{
     if(!S.myName.trim()){S.err='ใส่ชื่อก่อนนะ'; render(); return;}
@@ -1168,7 +1268,7 @@ function renderLobby(){
       <h3 style="color:var(--gold-soft); margin-bottom:8px;">ผู้เล่น (${room.players.length}/6)</h3>
       ${room.players.map(p=>`
         <div class="player-row">
-          <div class="avatar">${esc(p.name[0]||'?').toUpperCase()}</div>
+          <div class="avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
           <div class="player-name">${esc(p.name)}</div>
           ${p.id===room.hostId? '<span class="tag">เจ้าของห้อง</span>':''}
           ${p.id===S.myId? '<span class="tag" style="background:transparent; color:var(--muted); border:1px solid var(--muted);">คุณ</span>':''}
@@ -1329,6 +1429,7 @@ function renderGame(){
         const cls = ['seat']; if(pid===curId && !p.eliminated) cls.push('turn'); if(p.eliminated) cls.push('out');
         return `<div class="${cls.join(' ')}">
           ${p.id===room.hostId? '<div class="badge">★</div>':''}
+          <div class="avatar seat-avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
           <div class="nm">${esc(p.name)}${p.id===S.myId?' (คุณ)':''}</div>
           <div class="cnt">${p.eliminated? 'ตกรอบ' : p.hand.length+' ใบ'}</div>
         </div>`;
@@ -1643,6 +1744,13 @@ function renderEnded(){
   } else if(capMode==='shrink'){
     revealLine = `เพดานสุดท้ายก่อนจบเกม (หดจาก 100): <b style="color:var(--gold-soft)">${finalTarget}</b> แต้ม`;
   }
+  if(isWin){
+    const confettiKey = room.code + '_' + room.winnerId;
+    if(S._lastConfettiKey !== confettiKey){
+      S._lastConfettiKey = confettiKey;
+      fireConfetti();
+    }
+  }
   app.innerHTML = `
     <div class="${sceneAnim}">
     <div class="brand"><h1>ร้อยแต้ม</h1></div>
@@ -1662,11 +1770,26 @@ function renderEnded(){
       <h3 style="color:var(--gold-soft); margin-bottom:8px;">ผู้เล่น</h3>
       ${room.players.map(p=>`
         <div class="player-row">
-          <div class="avatar">${esc(p.name[0]||'?').toUpperCase()}</div>
+          <div class="avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
           <div class="player-name">${esc(p.name)}</div>
           ${p.eliminated? '<span class="tag" style="background:var(--muted); color:var(--felt-1);">ตกรอบ</span>':''}
           ${p.id===room.winnerId? '<span class="tag">ชนะ</span>':''}
         </div>`).join('')}
+    </div>
+    <div class="panel">
+      <h3 style="color:var(--gold-soft); margin-bottom:8px;">🏆 สถิติสะสมในห้องนี้</h3>
+      ${[...room.players].sort((a,b)=>{
+          const sa = room.stats[a.id]||{wins:0,losses:0}, sb = room.stats[b.id]||{wins:0,losses:0};
+          return sb.wins - sa.wins;
+        }).map(p=>{
+          const s = room.stats[p.id]||{wins:0,losses:0};
+          return `
+        <div class="player-row">
+          <div class="avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
+          <div class="player-name">${esc(p.name)}</div>
+          <span class="small-note" style="margin:0;">ชนะ ${s.wins} · แพ้ ${s.losses}</span>
+        </div>`;
+        }).join('')}
     </div>
     <div class="btn-row">
       ${isHost? `<button class="btn btn-gold" id="btnAgain">เล่นรอบใหม่</button>` : `<div class="small-note">รอเจ้าของห้องเริ่มรอบใหม่...</div>`}
@@ -1700,7 +1823,33 @@ function renderEnded(){
   document.body.insertBefore(wrap, document.body.firstChild);
 })();
 
-render();
+async function init(){
+  const session = loadSession();
+  if(session){
+    app.innerHTML = `
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh; gap:16px; color:var(--muted);">
+        <div class="spinner"></div>
+        <div>กำลังเชื่อมต่อกลับเข้าห้อง...</div>
+      </div>`;
+    const room = await loadRoom(session.roomCode);
+    const stillIn = room && room.players.some(p=>p.id===session.myId);
+    if(room && stillIn){
+      S.myId = session.myId;
+      S.myName = session.myName || '';
+      S.myAvatar = session.myAvatar || AVATAR_OPTIONS[0];
+      S.roomCode = session.roomCode;
+      S.room = room;
+      S.screen = room.status==='playing' ? 'game' : room.status==='finished' ? 'ended' : 'lobby';
+      saveSession();
+      startPolling();
+      render();
+      return;
+    }
+    clearSession();
+  }
+  render();
+}
+init();
 </script>
 </body>
 </html>
