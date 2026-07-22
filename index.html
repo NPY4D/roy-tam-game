@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ร้อยแต้ม</title>
+<meta name="theme-color" content="#0b2a1f">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='29' fill='%230b2a1f' stroke='%23d4af37' stroke-width='4'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%23eecf82' font-family='Georgia,serif'%3E%E2%99%A0%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b2a1f'/%3E%3Ccircle cx='32' cy='32' r='27' fill='none' stroke='%23d4af37' stroke-width='3'/%3E%3Ctext x='32' y='44' font-size='32' text-anchor='middle' fill='%23eecf82' font-family='Georgia,serif'%3E%E2%99%A0%3C/text%3E%3C/svg%3E">
 <!--
 =====================================================================
 วิธีตั้งค่าก่อนใช้งาน (ทำครั้งเดียว):
@@ -181,6 +184,7 @@
   .avatar-opt:hover{border-color:rgba(212,175,55,.6); transform:translateY(-2px);}
   .avatar-opt.active{border-color:var(--gold); background:rgba(212,175,55,.18); box-shadow:0 0 0 3px rgba(212,175,55,.18);}
   .seat-avatar{margin:0 auto 6px;}
+  .rank-medal{width:22px; text-align:center; font-size:1.1rem; flex-shrink:0;}
 
   .confetti-burst{position:fixed; inset:0; pointer-events:none; z-index:60; overflow:hidden;}
   .confetti-burst span{
@@ -268,6 +272,7 @@
   .seat.out{opacity:.35;}
   .seat .nm{font-weight:600; font-size:.88rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .seat .cnt{font-size:.75rem; color:var(--muted); margin-top:2px;}
+  .seat .cnt.chip-cnt{color:var(--gold-soft); font-family:'Space Mono',monospace;}
   .seat .badge{position:absolute; top:-8px; right:-8px; font-size:.7rem;
     background:linear-gradient(155deg,var(--gold-soft),var(--gold-deep)); color:#2a2005; border-radius:50%;
     width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-weight:700;
@@ -1560,6 +1565,7 @@ function renderGame(){
           <div class="avatar seat-avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
           <div class="nm">${esc(p.name)}${p.id===S.myId?' (คุณ)':''}</div>
           <div class="cnt">${p.eliminated? 'ตกรอบ' : p.hand.length+' ใบ'}</div>
+          ${!p.eliminated ? `<div class="cnt chip-cnt">💰 ${p.chips||0}</div>` : ''}
         </div>`;
       }).join('')}
     </div>
@@ -2001,10 +2007,12 @@ function renderEnded(){
       ${[...room.players].sort((a,b)=>{
           const sa = room.stats[a.id]||{wins:0,losses:0}, sb = room.stats[b.id]||{wins:0,losses:0};
           return sb.wins - sa.wins;
-        }).map(p=>{
+        }).map((p,i)=>{
           const s = room.stats[p.id]||{wins:0,losses:0};
+          const medal = s.wins>0 ? (['🥇','🥈','🥉'][i] || '　') : '　';
           return `
         <div class="player-row">
+          <div class="rank-medal">${medal}</div>
           <div class="avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
           <div class="player-name">${esc(p.name)}</div>
           <span class="small-note" style="margin:0;">ชนะ ${s.wins} · แพ้ ${s.losses}</span>
