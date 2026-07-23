@@ -801,7 +801,6 @@ const S = {
   showManage:false,
   showJoinBox:false,
   publicRooms:undefined,
-  roomsPollTimer:null,
   swapPending:null,
   spyPending:null,
   mulliganPending:null,
@@ -1366,87 +1365,11 @@ async function kickPlayer(targetId){
   if(room){ S.room = room; render(); }
 }
 
-// Actually remove a player from the room on the server. This used to be
-// missing entirely — leaveRoom() only cleared local state, so the room
-// (and the "leaving" player's seat) stayed in Firebase forever: a ghost
-// room that still shows up in the public list, still counts the seat as
-// taken, and — if it was the host who left — can never be started or
-// managed again because nobody left in it has hostId.
-async function removePlayerFromRoom(code, playerId){
-  if(!code || !playerId) return;
-  try{
-    await txRoom(code, r=>{
-      const idx = r.players.findIndex(p=>p.id===playerId);
-      if(idx===-1) return false;
-      const target = r.players[idx];
-      if(r.status==='lobby'){
-        // not playing yet: just drop the seat, same as a kick
-        r.players.splice(idx,1);
-        r.log.unshift(`🚪 ${target.name} ออกจากห้อง`);
-      } else if(r.status==='playing' && !target.eliminated){
-        // mid-game: eliminate them and return their cards to the draw pile,
-        // mirroring how a kick is handled during play
-        target.eliminated = true;
-        r.drawPile = shuffle([...r.drawPile, ...target.hand]);
-        target.hand = [];
-        r.log.unshift(`🚪 ${target.name} ออกจากห้องกลางเกม — การ์ดคืนเข้ากองจั่ว`);
-        const wasCurrent = r.order[r.currentIndex] === playerId;
-        const active = r.players.filter(p=>!p.eliminated);
-        if(active.length<=1){
-          r.status='finished';
-          if(r.mode==='A'){
-            r.winnerId = active.length===1 ? active[0].id : null;
-            if(r.winnerId){
-              r.stats = r.stats || {};
-              r.stats[r.winnerId] = r.stats[r.winnerId] || {wins:0,losses:0};
-              r.stats[r.winnerId].wins++;
-            }
-          }
-        } else if(wasCurrent){
-          r.currentIndex = nextIndex(r);
-          r.turnPhase='draw';
-          r.turnStartedAt = Date.now();
-        }
-      }
-      // if the person leaving was the host, hand the crown to whoever's
-      // left instead of stranding the room with a hostId nobody controls
-      if(r.hostId === playerId){
-        const remaining = r.players.filter(p=>p.id!==playerId);
-        const newHost = remaining.find(p=>!p.eliminated) || remaining[0];
-        if(newHost){
-          r.hostId = newHost.id;
-          r.log.unshift(`👑 ${newHost.name} กลายเป็นเจ้าของห้องคนใหม่`);
-        }
-      }
-    });
-    // if nobody's left (or everybody left mid-game is now eliminated), the
-    // room is dead weight — remove it instead of leaving a ghost behind
-    const after = await loadRoom(code);
-    if(after){
-      const nobodyLeft = after.players.length===0;
-      const everyoneOut = after.status==='playing' && after.players.every(p=>p.eliminated);
-      if(nobodyLeft || everyoneOut){
-        await db.ref('rooms/'+code).remove();
-      }
-    }
-  }catch(e){ console.error('leave cleanup failed', e); }
-}
-
 function leaveRoom(){
-  const code = S.roomCode, myId = S.myId;
   stopPolling();
   clearSession();
   S.roomCode=''; S.room=null; S.screen='landing'; render();
-  // fire-and-forget: the screen switches instantly, cleanup happens in the background
-  removePlayerFromRoom(code, myId);
 }
-
-// best-effort cleanup when the tab/browser closes without hitting the
-// "ออกจากห้อง" button — this is the other common way a ghost room gets left
-// behind (closing the tab currently does nothing at all server-side)
-window.addEventListener('pagehide', ()=>{
-  if(S.roomCode && S.myId) removePlayerFromRoom(S.roomCode, S.myId);
-});
 
 /* ---------- rendering ---------- */
 function cardEl(card, opts={}){
@@ -1599,7 +1522,24 @@ function renderLanding(){
           <h3 style="color:var(--gold-soft); margin:0;">🌐 ห้องที่เปิดอยู่</h3>
           <button class="btn btn-ghost" id="btnRefreshRooms" style="padding:4px 10px; font-size:.72rem;">🔄 รีเฟรช</button>
         </div>
-        <div id="publicRoomsList">${publicRoomsListHtml()}</div>
+        ${S.publicRooms===undefined || S.publicRooms==='loading' ? `
+          <div style="display:flex; align-items:center; gap:10px; color:var(--muted); padding:8px 0;">
+            <span class="spinner" style="width:18px; height:18px; border-width:2px;"></span>
+            <span style="font-size:.85rem;">กำลังค้นหาห้อง...</span>
+          </div>`
+        : S.publicRooms==='error' ? `
+          <p class="small-note" style="margin-top:0;">ไม่สามารถโหลดรายชื่อห้องได้ (อาจต้องเปิดสิทธิ์อ่านที่ระดับ "rooms" ใน Firebase rules ก่อน) — ใส่รหัสห้องด้วยตัวเองด้านบนแทนได้เลย</p>`
+        : S.publicRooms.length===0 ? `
+          <p class="small-note" style="margin-top:0;">ตอนนี้ยังไม่มีห้องเปิดอยู่ ลองสร้างห้องใหม่ดูสิ</p>`
+        : S.publicRooms.map(r=>`
+          <button class="public-room-row" data-code="${r.code}">
+            <span class="room-code-chip">${r.code}</span>
+            <span class="public-room-info">
+              <span class="public-room-host">${esc(r.hostName)}</span>
+              <span class="small-note" style="margin:0;">${r.count}/6 คน · ${r.mode==='A'?'คัดออก':'จบทันที'}</span>
+            </span>
+            <span class="public-room-go">เข้าร่วม →</span>
+          </button>`).join('')}
       </div>
     </div>
     ${S.err? `<div class="panel" style="border-color:var(--danger); color:#ffb3ac; margin-top:14px;">${esc(S.err)}</div>` : ''}
@@ -1624,51 +1564,20 @@ function renderLanding(){
     render();
     document.getElementById('codeInput')?.focus();
     if(S.publicRooms===undefined) loadPublicRooms();
-    else startRoomsPolling();
   };
   document.getElementById('btnDoJoin')?.addEventListener('click', (e)=>{
     const v = document.getElementById('codeInput').value;
     const btn = e.currentTarget;
     btn.disabled = true;
     btn.textContent = 'กำลังเข้าร่วม...';
-    stopRoomsPolling();
     joinRoom(v);
   });
-  wirePublicRoomsHandlers();
-}
-
-// ---- public rooms list: content + wiring kept separate from renderLanding
-// so a background refresh can patch just this one subtree (see
-// silentRefreshPublicRooms) instead of re-rendering the whole landing page,
-// which would blow away input focus / restart every animation → flicker.
-function publicRoomsListHtml(){
-  return S.publicRooms===undefined || S.publicRooms==='loading' ? `
-      <div style="display:flex; align-items:center; gap:10px; color:var(--muted); padding:8px 0;">
-        <span class="spinner" style="width:18px; height:18px; border-width:2px;"></span>
-        <span style="font-size:.85rem;">กำลังค้นหาห้อง...</span>
-      </div>`
-    : S.publicRooms==='error' ? `
-      <p class="small-note" style="margin-top:0;">ไม่สามารถโหลดรายชื่อห้องได้ (อาจต้องเปิดสิทธิ์อ่านที่ระดับ "rooms" ใน Firebase rules ก่อน) — ใส่รหัสห้องด้วยตัวเองด้านบนแทนได้เลย</p>`
-    : S.publicRooms.length===0 ? `
-      <p class="small-note" style="margin-top:0;">ตอนนี้ยังไม่มีห้องเปิดอยู่ ลองสร้างห้องใหม่ดูสิ</p>`
-    : S.publicRooms.map(r=>`
-      <button class="public-room-row" data-code="${r.code}">
-        <span class="room-code-chip">${r.code}</span>
-        <span class="public-room-info">
-          <span class="public-room-host">${esc(r.hostName)}</span>
-          <span class="small-note" style="margin:0;">${r.count}/6 คน · ${r.mode==='A'?'คัดออก':'จบทันที'}</span>
-        </span>
-        <span class="public-room-go">เข้าร่วม →</span>
-      </button>`).join('');
-}
-function wirePublicRoomsHandlers(){
   const refreshBtn = document.getElementById('btnRefreshRooms');
   if(refreshBtn) refreshBtn.onclick = ()=> loadPublicRooms();
   document.querySelectorAll('.public-room-row').forEach(row=>{
     row.onclick = ()=>{
       row.disabled = true;
       row.querySelector('.public-room-go').textContent = 'กำลังเข้าร่วม...';
-      stopRoomsPolling();
       joinRoom(row.dataset.code);
     };
   });
@@ -1680,33 +1589,6 @@ async function loadPublicRooms(){
   const result = await fetchPublicRooms();
   S.publicRooms = result;
   render();
-  startRoomsPolling();
-}
-
-// Auto-refresh the open-rooms list every 1s. Instead of calling the full
-// render() (which would wipe the name input's focus and restart every
-// looping animation on the page → visible flicker), this only touches the
-// #publicRoomsList subtree, and only when the fetched data actually
-// changed — so most ticks don't touch the DOM at all.
-function startRoomsPolling(){
-  stopRoomsPolling();
-  S.roomsPollTimer = setInterval(silentRefreshPublicRooms, 1000);
-}
-function stopRoomsPolling(){
-  if(S.roomsPollTimer){ clearInterval(S.roomsPollTimer); S.roomsPollTimer=null; }
-}
-async function silentRefreshPublicRooms(){
-  if(S.screen!=='landing' || !S.showJoinBox || !document.getElementById('publicRoomsList')){
-    stopRoomsPolling();
-    return;
-  }
-  const result = await fetchPublicRooms();
-  if(JSON.stringify(result) === JSON.stringify(S.publicRooms)) return; // nothing changed, skip the DOM write
-  S.publicRooms = result;
-  const target = document.getElementById('publicRoomsList');
-  if(!target) return; // box got closed while the fetch was in flight
-  target.innerHTML = publicRoomsListHtml();
-  wirePublicRoomsHandlers();
 }
 
 function renderLobby(){
@@ -1853,16 +1735,11 @@ function renderGame(){
   // fog: qualitative risk zone based on actual headroom to the real (hidden)
   // cap — e.g. secret cap 102: sitting at 99 (diff 3) reads "อันตราย",
   // sitting at 93 (diff 9) reads "เริ่มเสี่ยง". Never shows the numbers themselves.
-  // Note: there's intentionally no 4th "most dangerous" tier for diffToCap<=0 —
-  // that state can only be reached the instant centerTotal reaches the real
-  // cap exactly, so showing a distinct label right at that moment would
-  // effectively announce "the cap equals your current total", defeating
-  // the whole point of fog mode. Keeping it merged into "อันตราย" preserves
-  // the suspense.
   const fogZone = !isFog ? null
     : diffToCap > 15 ? {icon:'🟢', text:'ปลอดภัย'}
     : diffToCap > 5 ? {icon:'🟡', text:'เริ่มเสี่ยง'}
-    : {icon:'🔴', text:'อันตราย'};
+    : diffToCap > 0 ? {icon:'🟠', text:'อันตราย'}
+    : {icon:'🔴', text:'อันตรายที่สุด!'};
 
   // quick-buy suggestion: a contextual shortcut (like the peek button next
   // to the draw pile) that surfaces the most useful defensive item right
