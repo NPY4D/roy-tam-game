@@ -1366,11 +1366,87 @@ async function kickPlayer(targetId){
   if(room){ S.room = room; render(); }
 }
 
+// Actually remove a player from the room on the server. This used to be
+// missing entirely — leaveRoom() only cleared local state, so the room
+// (and the "leaving" player's seat) stayed in Firebase forever: a ghost
+// room that still shows up in the public list, still counts the seat as
+// taken, and — if it was the host who left — can never be started or
+// managed again because nobody left in it has hostId.
+async function removePlayerFromRoom(code, playerId){
+  if(!code || !playerId) return;
+  try{
+    await txRoom(code, r=>{
+      const idx = r.players.findIndex(p=>p.id===playerId);
+      if(idx===-1) return false;
+      const target = r.players[idx];
+      if(r.status==='lobby'){
+        // not playing yet: just drop the seat, same as a kick
+        r.players.splice(idx,1);
+        r.log.unshift(`🚪 ${target.name} ออกจากห้อง`);
+      } else if(r.status==='playing' && !target.eliminated){
+        // mid-game: eliminate them and return their cards to the draw pile,
+        // mirroring how a kick is handled during play
+        target.eliminated = true;
+        r.drawPile = shuffle([...r.drawPile, ...target.hand]);
+        target.hand = [];
+        r.log.unshift(`🚪 ${target.name} ออกจากห้องกลางเกม — การ์ดคืนเข้ากองจั่ว`);
+        const wasCurrent = r.order[r.currentIndex] === playerId;
+        const active = r.players.filter(p=>!p.eliminated);
+        if(active.length<=1){
+          r.status='finished';
+          if(r.mode==='A'){
+            r.winnerId = active.length===1 ? active[0].id : null;
+            if(r.winnerId){
+              r.stats = r.stats || {};
+              r.stats[r.winnerId] = r.stats[r.winnerId] || {wins:0,losses:0};
+              r.stats[r.winnerId].wins++;
+            }
+          }
+        } else if(wasCurrent){
+          r.currentIndex = nextIndex(r);
+          r.turnPhase='draw';
+          r.turnStartedAt = Date.now();
+        }
+      }
+      // if the person leaving was the host, hand the crown to whoever's
+      // left instead of stranding the room with a hostId nobody controls
+      if(r.hostId === playerId){
+        const remaining = r.players.filter(p=>p.id!==playerId);
+        const newHost = remaining.find(p=>!p.eliminated) || remaining[0];
+        if(newHost){
+          r.hostId = newHost.id;
+          r.log.unshift(`👑 ${newHost.name} กลายเป็นเจ้าของห้องคนใหม่`);
+        }
+      }
+    });
+    // if nobody's left (or everybody left mid-game is now eliminated), the
+    // room is dead weight — remove it instead of leaving a ghost behind
+    const after = await loadRoom(code);
+    if(after){
+      const nobodyLeft = after.players.length===0;
+      const everyoneOut = after.status==='playing' && after.players.every(p=>p.eliminated);
+      if(nobodyLeft || everyoneOut){
+        await db.ref('rooms/'+code).remove();
+      }
+    }
+  }catch(e){ console.error('leave cleanup failed', e); }
+}
+
 function leaveRoom(){
+  const code = S.roomCode, myId = S.myId;
   stopPolling();
   clearSession();
   S.roomCode=''; S.room=null; S.screen='landing'; render();
+  // fire-and-forget: the screen switches instantly, cleanup happens in the background
+  removePlayerFromRoom(code, myId);
 }
+
+// best-effort cleanup when the tab/browser closes without hitting the
+// "ออกจากห้อง" button — this is the other common way a ghost room gets left
+// behind (closing the tab currently does nothing at all server-side)
+window.addEventListener('pagehide', ()=>{
+  if(S.roomCode && S.myId) removePlayerFromRoom(S.roomCode, S.myId);
+});
 
 /* ---------- rendering ---------- */
 function cardEl(card, opts={}){
