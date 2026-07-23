@@ -261,6 +261,23 @@
     .copy-code-btn{padding:8px 10px; font-size:.78rem;}
   }
 
+  .public-room-row{
+    display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+    padding:10px 12px; margin-bottom:8px; border-radius:12px;
+    background:rgba(255,255,255,.03); border:1px solid rgba(212,175,55,.2);
+    transition:all .15s ease;
+  }
+  .public-room-row:last-child{margin-bottom:0;}
+  .public-room-row:hover{border-color:var(--gold); background:rgba(212,175,55,.08); transform:translateY(-1px);}
+  .public-room-row:disabled{opacity:.6; pointer-events:none;}
+  .room-code-chip{
+    font-family:'Space Mono',monospace; font-weight:700; letter-spacing:1px; font-size:.85rem;
+    color:var(--gold-soft); background:rgba(0,0,0,.25); padding:6px 10px; border-radius:8px; flex-shrink:0;
+  }
+  .public-room-info{display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;}
+  .public-room-host{font-weight:600; font-size:.88rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .public-room-go{font-size:.78rem; color:var(--gold-soft); flex-shrink:0; white-space:nowrap;}
+
   .player-row{display:flex; align-items:center; gap:12px; padding:10px 6px; border-bottom:1px solid rgba(255,255,255,.06);}
   .player-row:last-child{border-bottom:none;}
   @keyframes rowSlideIn{from{opacity:0; transform:translateX(-10px);} to{opacity:1; transform:translateX(0);}}
@@ -273,6 +290,12 @@
   .player-row:hover .avatar{transform:scale(1.08) rotate(-4deg);}
   .player-name{font-weight:600;}
   .tag{font-size:.72rem; color:var(--felt-1); background:var(--gold-soft); padding:2px 8px; border-radius:20px; font-weight:700;}
+  .kick-btn{
+    margin-left:auto; width:26px; height:26px; border-radius:50%; flex-shrink:0;
+    background:rgba(224,72,62,.12); border:1px solid rgba(224,72,62,.35); color:var(--danger);
+    font-size:.85rem; line-height:1; transition:all .15s ease;
+  }
+  .kick-btn:hover{background:rgba(224,72,62,.28); transform:scale(1.08);}
 
   .mode-select{display:flex; flex-direction:column; gap:10px; margin-top:8px;}
   .mode-opt{
@@ -708,6 +731,7 @@ function normalizeRoom(r){
     p.spyBought = p.spyBought || 0;
     p.mulliganBought = p.mulliganBought || 0;
     p.spyResult = p.spyResult || null;
+    p.missedTurns = p.missedTurns || 0;
   });
   r.order = r.order || [];
   r.drawPile = r.drawPile || [];
@@ -774,6 +798,9 @@ const S = {
   aceCardPending:null,
   showRules:false,
   showShop:false,
+  showManage:false,
+  showJoinBox:false,
+  publicRooms:undefined,
   swapPending:null,
   spyPending:null,
   mulliganPending:null,
@@ -932,7 +959,7 @@ async function createRoom(){
   const code = roomCodeGen();
   const room = {
     code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby',
-    players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null}],
+    players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null, missedTurns:0}],
     order:[], currentIndex:0, direction:1,
     drawPile:[], discardPile:[], centerTotal:0, capTarget:100, roundTurnCounter:0,
     turnPhase:'draw', turnStartedAt:0, turnTimeLimit:TURN_LIMIT_MS,
@@ -943,6 +970,29 @@ async function createRoom(){
   S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
   saveSession();
   startPolling(); render();
+}
+
+// browse rooms that are still in the lobby (waiting for players) and not
+// full yet — requires the Firebase rule to also grant read at the "rooms"
+// level (not just "rooms/$code"), since listing children needs a rule on
+// the parent node. If that hasn't been added, this fails with a
+// permission error and we show a hint instead of crashing.
+async function fetchPublicRooms(){
+  try{
+    const snap = await db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(20).once('value');
+    const rooms = [];
+    snap.forEach(child=>{
+      const r = child.val();
+      if(r && Array.isArray(r.players) && r.players.length>0 && r.players.length<6){
+        const host = r.players.find(p=>p.id===r.hostId) || r.players[0];
+        rooms.push({code: r.code || child.key, hostName: host.name||'?', count:r.players.length, mode:r.mode});
+      }
+    });
+    rooms.reverse();
+    return rooms;
+  }catch(e){
+    return 'error';
+  }
 }
 
 async function joinRoom(codeInput){
@@ -959,7 +1009,7 @@ async function joinRoom(codeInput){
     if(r.status!=='lobby'){ joinError='ห้องนี้เริ่มเกมไปแล้ว'; return false; }
     if(r.players.length>=6){ joinError='ห้องเต็มแล้ว (สูงสุด 6 คน)'; return false; }
     if(r.players.some(p=>p.name===S.myName.trim())){ joinError='มีชื่อนี้ในห้องแล้ว ใช้ชื่ออื่น'; return false; }
-    r.players.push({id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null});
+    r.players.push({id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null, missedTurns:0});
     r.log.unshift(`${S.myName.trim()} เข้าร่วมห้อง`);
   });
   if(!committed || !room){ S.err = joinError || 'เข้าร่วมไม่สำเร็จ ลองใหม่'; render(); return; }
@@ -993,7 +1043,7 @@ async function startGame(){
     p.hand = deck.splice(0,5); p.eliminated=false;
     p.chips = p.chips||0; p.shieldOwned=false; p.shieldUsed=false;
     p.reliefBought=0; p.swapBought=0; p.peekBought=0; p.peekPending=null;
-    p.spyBought=0; p.mulliganBought=0; p.spyResult=null;
+    p.spyBought=0; p.mulliganBought=0; p.spyResult=null; p.missedTurns=0;
   });
   fresh.order = fresh.players.map(p=>p.id);
   fresh.currentIndex = 0;
@@ -1025,6 +1075,7 @@ async function performDraw(){
     const card = r.drawPile.pop();
     const me = r.players.find(p=>p.id===S.myId);
     me.hand.push(card);
+    me.missedTurns = 0;
     r.turnPhase='discard';
   });
   if(room){ S.room = room; render(); }
@@ -1038,6 +1089,7 @@ async function performDiscard(cardId, aceValue){
     const idx = me.hand.findIndex(c=>c.id===cardId);
     if(idx===-1) return false;
     const card = me.hand.splice(idx,1)[0];
+    me.missedTurns = 0;
     resolveDiscard(r, me, card, aceValue);
   });
   if(room){ S.room = room; }
@@ -1054,6 +1106,7 @@ async function autoPlay(){
     const curId = r.order[r.currentIndex];
     const p = r.players.find(pl=>pl.id===curId);
     if(!p) return false;
+    p.missedTurns = (p.missedTurns||0) + 1;
     if(r.turnPhase==='draw'){
       ensureDrawPile(r);
       if(r.drawPile.length>0){
@@ -1266,12 +1319,50 @@ async function playAgain(){
     p.hand=[]; p.eliminated=false;
     p.chips=0; p.shieldOwned=false; p.shieldUsed=false;
     p.reliefBought=0; p.swapBought=0; p.peekBought=0; p.peekPending=null;
-    p.spyBought=0; p.mulliganBought=0; p.spyResult=null;
+    p.spyBought=0; p.mulliganBought=0; p.spyResult=null; p.missedTurns=0;
   });
   fresh.winnerId=null; fresh.loserId=null;
   fresh.log=[`เตรียมรอบใหม่`];
   await saveRoom(S.roomCode, fresh);
   S.room = fresh; S.screen='lobby'; render();
+}
+
+async function kickPlayer(targetId){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.hostId !== S.myId) return false;
+    if(targetId === S.myId) return false;
+    const idx = r.players.findIndex(p=>p.id===targetId);
+    if(idx===-1) return false;
+    const target = r.players[idx];
+    if(r.status==='lobby'){
+      r.players.splice(idx,1);
+      r.log.unshift(`🚪 ${target.name} ถูกเตะออกจากห้อง`);
+      return;
+    }
+    if(r.status!=='playing' || target.eliminated) return false;
+    target.eliminated = true;
+    // give their cards back to the draw pile (shuffled in) instead of just
+    // discarding them, so the deck composition stays fair for everyone else
+    r.drawPile = shuffle([...r.drawPile, ...target.hand]);
+    target.hand = [];
+    r.log.unshift(`🚪 ${target.name} ถูกเตะออกจากเกม (ไม่ได้เล่นหลายตาติด) — การ์ดคืนเข้ากองจั่ว`);
+    const wasCurrent = r.order[r.currentIndex] === targetId;
+    const active = r.players.filter(p=>!p.eliminated);
+    if(r.mode==='A' && active.length<=1){
+      r.status='finished';
+      r.winnerId = active.length===1 ? active[0].id : null;
+      if(r.winnerId){
+        r.stats = r.stats || {};
+        r.stats[r.winnerId] = r.stats[r.winnerId] || {wins:0,losses:0};
+        r.stats[r.winnerId].wins++;
+      }
+    } else if(wasCurrent){
+      r.currentIndex = nextIndex(r);
+      r.turnPhase='draw';
+      r.turnStartedAt = Date.now();
+    }
+  });
+  if(room){ S.room = room; render(); }
 }
 
 function leaveRoom(){
@@ -1420,11 +1511,35 @@ function renderLanding(){
         <p>มีรหัสห้องจากเพื่อนแล้ว ใส่รหัสเพื่อเข้าร่วม</p>
       </div>
     </div>
-    <div id="joinBox" style="display:none; margin-top:14px;">
+    <div id="joinBox" style="${S.showJoinBox?'':'display:none;'} margin-top:14px;">
       <div class="panel">
         <label for="codeInput">รหัสห้อง</label>
         <input id="codeInput" type="text" placeholder="เช่น A7K2X" maxlength="5" style="text-transform:uppercase;">
         <div class="btn-row"><button class="btn btn-gold" id="btnDoJoin">เข้าร่วม</button></div>
+      </div>
+      <div class="panel" style="margin-top:12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <h3 style="color:var(--gold-soft); margin:0;">🌐 ห้องที่เปิดอยู่</h3>
+          <button class="btn btn-ghost" id="btnRefreshRooms" style="padding:4px 10px; font-size:.72rem;">🔄 รีเฟรช</button>
+        </div>
+        ${S.publicRooms===undefined || S.publicRooms==='loading' ? `
+          <div style="display:flex; align-items:center; gap:10px; color:var(--muted); padding:8px 0;">
+            <span class="spinner" style="width:18px; height:18px; border-width:2px;"></span>
+            <span style="font-size:.85rem;">กำลังค้นหาห้อง...</span>
+          </div>`
+        : S.publicRooms==='error' ? `
+          <p class="small-note" style="margin-top:0;">ไม่สามารถโหลดรายชื่อห้องได้ (อาจต้องเปิดสิทธิ์อ่านที่ระดับ "rooms" ใน Firebase rules ก่อน) — ใส่รหัสห้องด้วยตัวเองด้านบนแทนได้เลย</p>`
+        : S.publicRooms.length===0 ? `
+          <p class="small-note" style="margin-top:0;">ตอนนี้ยังไม่มีห้องเปิดอยู่ ลองสร้างห้องใหม่ดูสิ</p>`
+        : S.publicRooms.map(r=>`
+          <button class="public-room-row" data-code="${r.code}">
+            <span class="room-code-chip">${r.code}</span>
+            <span class="public-room-info">
+              <span class="public-room-host">${esc(r.hostName)}</span>
+              <span class="small-note" style="margin:0;">${r.count}/6 คน · ${r.mode==='A'?'คัดออก':'จบทันที'}</span>
+            </span>
+            <span class="public-room-go">เข้าร่วม →</span>
+          </button>`).join('')}
       </div>
     </div>
     ${S.err? `<div class="panel" style="border-color:var(--danger); color:#ffb3ac; margin-top:14px;">${esc(S.err)}</div>` : ''}
@@ -1445,8 +1560,10 @@ function renderLanding(){
   };
   document.getElementById('btnJoin').onclick = ()=>{
     if(!S.myName.trim()){S.err='ใส่ชื่อก่อนนะ'; render(); return;}
-    document.getElementById('joinBox').style.display='block';
-    document.getElementById('codeInput').focus();
+    S.showJoinBox = true;
+    render();
+    document.getElementById('codeInput')?.focus();
+    if(S.publicRooms===undefined) loadPublicRooms();
   };
   document.getElementById('btnDoJoin')?.addEventListener('click', (e)=>{
     const v = document.getElementById('codeInput').value;
@@ -1455,6 +1572,23 @@ function renderLanding(){
     btn.textContent = 'กำลังเข้าร่วม...';
     joinRoom(v);
   });
+  const refreshBtn = document.getElementById('btnRefreshRooms');
+  if(refreshBtn) refreshBtn.onclick = ()=> loadPublicRooms();
+  document.querySelectorAll('.public-room-row').forEach(row=>{
+    row.onclick = ()=>{
+      row.disabled = true;
+      row.querySelector('.public-room-go').textContent = 'กำลังเข้าร่วม...';
+      joinRoom(row.dataset.code);
+    };
+  });
+}
+
+async function loadPublicRooms(){
+  S.publicRooms = 'loading';
+  render();
+  const result = await fetchPublicRooms();
+  S.publicRooms = result;
+  render();
 }
 
 function renderLobby(){
@@ -1481,6 +1615,7 @@ function renderLobby(){
           <div class="player-name">${esc(p.name)}</div>
           ${p.id===room.hostId? '<span class="tag">เจ้าของห้อง</span>':''}
           ${p.id===S.myId? '<span class="tag" style="background:transparent; color:var(--muted); border:1px solid var(--muted);">คุณ</span>':''}
+          ${isHost && p.id!==S.myId ? `<button class="kick-btn" data-id="${p.id}" title="เตะออกจากห้อง">✕</button>` : ''}
         </div>`).join('')}
       ${room.players.length<2? `<div class="small-note">ต้องมีอย่างน้อย 2 คนถึงจะเริ่มได้</div>` : ''}
     </div>
@@ -1540,6 +1675,12 @@ function renderLobby(){
     };
   }
   document.getElementById('btnLeave').onclick = leaveRoom;
+  document.querySelectorAll('.kick-btn').forEach(btn=>{
+    btn.onclick = ()=>{
+      const p = room.players.find(pl=>pl.id===btn.dataset.id);
+      if(p && confirm(`เตะ ${p.name} ออกจากห้องใช่ไหม?`)) kickPlayer(btn.dataset.id);
+    };
+  });
   document.getElementById('btnRulesLobby').onclick = ()=>{ S.showRules = true; render(); };
   document.getElementById('btnCopyCode').onclick = (e)=> copyRoomCode(room.code, e.currentTarget);
   if(S.showRules){
@@ -1570,6 +1711,7 @@ async function copyRoomCode(code, btn){
 function renderGame(){
   const room = S.room;
   const me = room.players.find(p=>p.id===S.myId);
+  const isHost = room.hostId===S.myId;
   const curId = room.order[room.currentIndex];
   const curPlayer = room.players.find(p=>p.id===curId);
   const isMyTurn = curId===S.myId && !me.eliminated;
@@ -1669,6 +1811,7 @@ function renderGame(){
       <span style="display:flex; align-items:center; gap:8px;">
         <button id="btnSound" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;" title="เปิด/ปิดเสียง">${S.soundOn?'🔊':'🔇'}</button>
         <button id="btnRules" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">กติกา</button>
+        ${isHost ? `<button id="btnManage" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;" title="จัดการผู้เล่น">👥</button>` : ''}
         <span>คุณ: ${esc(me.name)}</span>
       </span>
     </div>
@@ -1767,6 +1910,7 @@ function renderGame(){
     ${me.spyResult ? spyResultModalHtml(me) : ''}
     ${S.mulliganPending ? mulliganModalHtml(me) : ''}
     ${!me.peekPending && !S.swapPending && !S.spyPending && !me.spyResult && !S.mulliganPending && S.showShop ? shopModalHtml(me) : ''}
+    ${isHost && S.showManage ? manageModalHtml() : ''}
     ${S.showRules ? rulesModalHtml() : ''}
     </div>
   `;
@@ -1798,6 +1942,20 @@ function renderGame(){
   document.getElementById('btnRules').onclick = ()=>{ S.showRules = true; render(); };
   if(S.showRules){
     document.getElementById('btnCloseRules').onclick = ()=>{ S.showRules = false; render(); };
+  }
+  const btnManage = document.getElementById('btnManage');
+  if(btnManage) btnManage.onclick = ()=>{ S.showManage = true; render(); };
+  if(isHost && S.showManage){
+    document.getElementById('manageClose').onclick = ()=>{ S.showManage = false; render(); };
+    document.getElementById('manageBg').onclick = (e)=>{ if(e.target.id==='manageBg'){ S.showManage=false; render(); } };
+    document.querySelectorAll('.manage-kick-btn').forEach(btn=>{
+      btn.onclick = ()=>{
+        const p = room.players.find(pl=>pl.id===btn.dataset.id);
+        if(p && confirm(`เตะ ${p.name} ออกจากเกมใช่ไหม? การ์ดในมือเขาจะคืนเข้ากองจั่ว`)){
+          kickPlayer(btn.dataset.id);
+        }
+      };
+    });
   }
 
   document.getElementById('btnShop').onclick = ()=>{ S.showShop = true; render(); };
@@ -2063,6 +2221,27 @@ function mulliganModalHtml(me){
           </div>`).join('')}
       </div>
       <button class="btn btn-ghost" id="mulliganCancelBtn" style="margin-top:10px;">ยกเลิก</button>
+    </div>
+  </div>`;
+}
+
+function manageModalHtml(){
+  const room = S.room;
+  const others = room.players.filter(p=>p.id!==S.myId && !p.eliminated);
+  return `
+  <div class="modal-bg" id="manageBg">
+    <div class="modal" style="max-width:420px; text-align:left;">
+      <h3 style="color:var(--gold-soft); margin-bottom:4px;">👥 จัดการผู้เล่น</h3>
+      <p class="small-note" style="margin-bottom:12px;">เตะคนที่หายไปจริงๆ ออกได้ — การ์ดในมือเขาจะคืนเข้ากองจั่ว</p>
+      ${others.length===0 ? `<p class="small-note">ไม่มีผู้เล่นคนอื่นให้จัดการตอนนี้</p>` : others.map(p=>`
+        <div class="player-row">
+          <div class="avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
+          <div class="player-name">${esc(p.name)}</div>
+          ${p.missedTurns>=2 ? `<span class="tag" style="background:var(--danger); color:var(--cream);">หายไป ${p.missedTurns} ตา</span>`
+            : p.missedTurns===1 ? `<span class="tag" style="background:transparent; color:var(--muted); border:1px solid var(--muted);">พลาด 1 ตา</span>` : ''}
+          <button class="kick-btn manage-kick-btn" data-id="${p.id}" title="เตะออกจากเกม">✕</button>
+        </div>`).join('')}
+      <button class="btn btn-ghost" id="manageClose" style="margin-top:14px; width:100%;">ปิด</button>
     </div>
   </div>`;
 }
