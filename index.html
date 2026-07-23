@@ -863,6 +863,7 @@ function stopPolling(){
    system already covers an absent player mid-game. Re-armed if the host
    resets back to a lobby via "เล่นรอบใหม่". */
 let presenceConnRef = null;
+let heartbeatTimer = null;
 function armHostAutoCleanup(code){
   disarmHostAutoCleanup();
   const roomRef = db.ref('rooms/'+code);
@@ -870,10 +871,21 @@ function armHostAutoCleanup(code){
   presenceConnRef.on('value', snap=>{
     if(snap.val()===true) roomRef.onDisconnect().remove();
   });
+  // heartbeat: onDisconnect isn't instant or guaranteed — mobile browsers
+  // especially (iOS Safari in particular) can keep a "closed" tab's socket
+  // alive in the background for a long while before the server notices it's
+  // gone. So we also stamp a timestamp every 20s while actively in the
+  // lobby; fetchPublicRooms() below hides any room whose stamp is more than
+  // ~60s old, which works regardless of whether the disconnect event ever
+  // fires — it only requires the host's JS to have stopped running.
+  const beat = ()=> roomRef.child('heartbeatAt').set(Date.now()).catch(()=>{});
+  beat();
+  heartbeatTimer = setInterval(beat, 20000);
 }
 function disarmHostAutoCleanup(){
   if(S.roomCode) db.ref('rooms/'+S.roomCode).onDisconnect().cancel();
   if(presenceConnRef){ presenceConnRef.off(); presenceConnRef=null; }
+  if(heartbeatTimer){ clearInterval(heartbeatTimer); heartbeatTimer=null; }
 }
 
 /* ---------- game helpers ---------- */
@@ -986,7 +998,7 @@ async function createRoom(){
   if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
   const code = roomCodeGen();
   const room = {
-    code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby', createdAt:Date.now(),
+    code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby', createdAt:Date.now(), heartbeatAt:Date.now(),
     players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null, missedTurns:0}],
     order:[], currentIndex:0, direction:1,
     drawPile:[], discardPile:[], centerTotal:0, capTarget:100, roundTurnCounter:0,
@@ -1007,7 +1019,8 @@ async function createRoom(){
 // level (not just "rooms/$code"), since listing children needs a rule on
 // the parent node. If that hasn't been added, this fails with a
 // permission error and we show a hint instead of crashing.
-const PUBLIC_ROOM_MAX_AGE_MS = 90*60*1000; // 90 minutes — a lobby idle longer than this is almost certainly abandoned
+const PUBLIC_ROOM_MAX_AGE_MS = 90*60*1000; // 90 minutes — a lobby idle longer than this is almost certainly abandoned; safe to delete outright
+const HEARTBEAT_STALE_MS = 60*1000; // no heartbeat in the last 60s — host's tab is gone; hide from the list (but don't delete, could be a network blip)
 async function fetchPublicRooms(){
   try{
     const snap = await db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(30).once('value');
@@ -1024,6 +1037,8 @@ async function fetchPublicRooms(){
         staleKeys.push(child.key);
         return;
       }
+      const freshness = r.heartbeatAt || r.createdAt || 0;
+      if(now - freshness > HEARTBEAT_STALE_MS) return; // host's gone quiet — hide, don't delete yet
       if(r.players.length>0 && r.players.length<6){
         const host = r.players.find(p=>p.id===r.hostId) || r.players[0];
         rooms.push({code: r.code || child.key, hostName: host.name||'?', count:r.players.length, mode:r.mode, createdAt:r.createdAt||0});
