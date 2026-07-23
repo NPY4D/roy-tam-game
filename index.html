@@ -104,6 +104,18 @@
   button{font-family:'Sarabun',sans-serif; cursor:pointer;}
   #app{max-width:900px; margin:0 auto; padding:20px 16px 60px; min-height:100vh;}
 
+  .landing-illustration{
+    display:flex; justify-content:center; margin-top:8px;
+    animation:illusRise .6s cubic-bezier(.22,.75,.25,1) both, illusFloat 4.5s ease-in-out .6s infinite;
+    filter:drop-shadow(0 10px 18px rgba(0,0,0,.4));
+  }
+  .illus-card rect{filter:drop-shadow(0 2px 4px rgba(0,0,0,.25));}
+  @keyframes illusRise{from{opacity:0; transform:translateY(16px) scale(.92);} to{opacity:1; transform:translateY(0) scale(1);}}
+  @keyframes illusFloat{0%,100%{transform:translateY(0);} 50%{transform:translateY(-6px);}}
+  @media (prefers-reduced-motion:reduce){
+    .landing-illustration{animation:none;}
+  }
+
   .brand{text-align:center; margin:18px 0 30px;}
   .brand h1{
     font-size:clamp(2.4rem,7.5vw,3.6rem); font-weight:700; font-style:italic; letter-spacing:.5px;
@@ -201,6 +213,21 @@
     animation:spinRotate .8s linear infinite;
   }
   @keyframes spinRotate{ to{ transform:rotate(360deg); } }
+
+  .skeleton-screen{max-width:900px; margin:0 auto; padding:20px 16px;}
+  .skeleton-block{
+    background:linear-gradient(100deg, rgba(255,255,255,.05) 20%, rgba(212,175,55,.14) 42%, rgba(255,255,255,.05) 64%);
+    background-size:250% 100%;
+    animation:skeletonShimmer 1.5s ease-in-out infinite;
+    border-radius:12px;
+  }
+  @keyframes skeletonShimmer{
+    0%{background-position:150% 0;}
+    100%{background-position:-50% 0;}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .skeleton-block{animation:none; background:rgba(255,255,255,.06);}
+  }
   @media (prefers-reduced-motion:reduce){
     .confetti-burst{display:none;}
   }
@@ -345,6 +372,28 @@
   .turn-banner.mine{background:rgba(212,175,55,.22);}
   .timer-bar{height:6px; border-radius:6px; background:rgba(255,255,255,.12); margin-top:8px; overflow:hidden;}
   .timer-fill{height:100%; background:linear-gradient(90deg,var(--gold-soft),var(--gold)); transition:width 1s linear;}
+
+  .quick-suggest{
+    display:flex; align-items:center; gap:10px; padding:10px 12px; margin-bottom:12px;
+    background:rgba(224,72,62,.12); border:1px solid rgba(224,72,62,.4); border-radius:12px;
+    animation:suggestSlideIn .4s cubic-bezier(.22,.75,.25,1) both;
+  }
+  .quick-suggest-icon{font-size:1.3rem; flex-shrink:0;}
+  .quick-suggest-text{flex:1; font-size:.82rem; color:var(--cream); min-width:0;}
+  .quick-suggest button.btn{padding:7px 12px; font-size:.78rem; flex-shrink:0; white-space:nowrap;}
+  .quick-suggest-dismiss{
+    background:none; border:none; color:var(--muted); font-size:1rem; padding:4px 6px; flex-shrink:0;
+    transition:color .15s ease;
+  }
+  .quick-suggest-dismiss:hover{color:var(--cream);}
+  @keyframes suggestSlideIn{from{opacity:0; transform:translateY(-10px);} to{opacity:1; transform:translateY(0);}}
+  @media (max-width:460px){
+    .quick-suggest{flex-wrap:wrap;}
+    .quick-suggest-text{flex-basis:100%; order:1;}
+    .quick-suggest-icon{order:0;}
+    .quick-suggest button.btn{order:2;}
+    .quick-suggest-dismiss{order:3;}
+  }
 
   .hand-area{margin-top:14px;}
   .hand-scroll{display:flex; gap:10px; overflow-x:auto; padding:16px 6px; justify-content:flex-start; scroll-snap-type:x proximity;}
@@ -735,7 +784,10 @@ const S = {
   _lastDiscardTop:null,
   _lastLogTop:null,
   _lastCenterTotal:0,
-  _lastConfettiKey:null
+  _lastConfettiKey:null,
+  _suggestDismissed:false,
+  _lastCenterShown:null,
+  _lastChipsShown:null
 };
 let sceneAnim = '';
 
@@ -1239,6 +1291,24 @@ function backCardEl(small){
 
 function esc(s){ return (s||'').replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
 
+// animate a number element from its last known value up/down to a new one,
+// instead of just snapping to the new digit — used for chip counts and the
+// center-total gauge. Respects reduced-motion by jumping straight to target.
+function animateCountUp(el, from, to, duration=600){
+  if(!el) return;
+  const prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(from===to || prefersReduced){ el.textContent = to; return; }
+  const start = performance.now();
+  function tick(now){
+    const t = Math.min(1, (now-start)/duration);
+    const eased = 1 - Math.pow(1-t, 3);
+    el.textContent = Math.round(from + (to-from)*eased);
+    if(t<1) requestAnimationFrame(tick);
+    else el.textContent = to;
+  }
+  requestAnimationFrame(tick);
+}
+
 function fireConfetti(){
   const prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if(prefersReduced) return;
@@ -1306,6 +1376,25 @@ function render(){
 function renderLanding(){
   app.innerHTML = `
     <div class="${sceneAnim}">
+    <div class="landing-illustration">
+      <svg viewBox="0 0 200 130" width="170" height="110" aria-hidden="true">
+        <g class="illus-card" transform="translate(62,66) rotate(-16)">
+          <rect x="-38" y="-52" width="76" height="104" rx="10" fill="#faf6ea" stroke="#d4af37" stroke-width="2"/>
+          <text x="-30" y="-30" font-family="'Space Mono',monospace" font-size="16" font-weight="700" fill="#16211b">K</text>
+          <text x="0" y="14" font-size="30" text-anchor="middle" fill="#16211b">♠</text>
+        </g>
+        <g class="illus-card" transform="translate(100,60)">
+          <rect x="-38" y="-52" width="76" height="104" rx="10" fill="#faf6ea" stroke="#d4af37" stroke-width="2"/>
+          <text x="-30" y="-30" font-family="'Space Mono',monospace" font-size="16" font-weight="700" fill="#b23a32">A</text>
+          <text x="0" y="14" font-size="30" text-anchor="middle" fill="#b23a32">♥</text>
+        </g>
+        <g class="illus-card" transform="translate(138,66) rotate(16)">
+          <rect x="-38" y="-52" width="76" height="104" rx="10" fill="#faf6ea" stroke="#d4af37" stroke-width="2"/>
+          <text x="-34" y="-30" font-family="'Space Mono',monospace" font-size="15" font-weight="700" fill="#16211b">10</text>
+          <text x="0" y="14" font-size="30" text-anchor="middle" fill="#16211b">♣</text>
+        </g>
+      </svg>
+    </div>
     <div class="brand">
       <h1>ร้อยแต้ม</h1>
       <div class="sub">เกมไพ่ออนไลน์ 2-6 คน · ห้ามทำกองกลางเกิน 100</div>
@@ -1346,14 +1435,24 @@ function renderLanding(){
   document.querySelectorAll('.avatar-opt').forEach(btn=>{
     btn.onclick = ()=>{ S.myAvatar = btn.dataset.avatar; render(); };
   });
-  document.getElementById('btnCreate').onclick = ()=>{ if(!S.myName.trim()){S.err='ใส่ชื่อก่อนนะ'; render(); return;} createRoom(); };
+  document.getElementById('btnCreate').onclick = (e)=>{
+    if(!S.myName.trim()){S.err='ใส่ชื่อก่อนนะ'; render(); return;}
+    const card = e.currentTarget;
+    card.style.pointerEvents = 'none';
+    card.querySelector('h3').textContent = 'กำลังสร้างห้อง...';
+    card.querySelector('.icon').innerHTML = '<span class="spinner" style="width:22px;height:22px;border-width:2px;"></span>';
+    createRoom();
+  };
   document.getElementById('btnJoin').onclick = ()=>{
     if(!S.myName.trim()){S.err='ใส่ชื่อก่อนนะ'; render(); return;}
     document.getElementById('joinBox').style.display='block';
     document.getElementById('codeInput').focus();
   };
-  document.getElementById('btnDoJoin')?.addEventListener('click', ()=>{
+  document.getElementById('btnDoJoin')?.addEventListener('click', (e)=>{
     const v = document.getElementById('codeInput').value;
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'กำลังเข้าร่วม...';
     joinRoom(v);
   });
 }
@@ -1433,7 +1532,12 @@ function renderLobby(){
   if(isHost){
     document.querySelectorAll('input[name=mode]').forEach(r=> r.onchange = e=> setMode(e.target.value));
     document.querySelectorAll('input[name=capMode]').forEach(r=> r.onchange = e=> setCapMode(e.target.value));
-    document.getElementById('btnStart').onclick = startGame;
+    document.getElementById('btnStart').onclick = (e)=>{
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'กำลังเริ่ม...';
+      startGame();
+    };
   }
   document.getElementById('btnLeave').onclick = leaveRoom;
   document.getElementById('btnRulesLobby').onclick = ()=>{ S.showRules = true; render(); };
@@ -1495,6 +1599,20 @@ function renderGame(){
     : diffToCap > 0 ? {icon:'🟠', text:'อันตราย'}
     : {icon:'🔴', text:'อันตรายที่สุด!'};
 
+  // quick-buy suggestion: a contextual shortcut (like the peek button next
+  // to the draw pile) that surfaces the most useful defensive item right
+  // when the gauge gets dangerous, instead of making the player dig
+  // through the shop modal themselves
+  let quickSuggestion = null;
+  if(inDanger && !me.eliminated){
+    if(!me.shieldOwned && !me.shieldUsed && me.chips >= SHOP_ITEMS.shield.cost){
+      quickSuggestion = {icon:SHOP_ITEMS.shield.icon, text:'กองกลางใกล้ระเบิด! ซื้อโล่กันตกรอบด่วนไหม?', cost:SHOP_ITEMS.shield.cost, action:'quickBuyShield'};
+    } else if((me.reliefBought||0) < SHOP_ITEMS.relief.max && me.chips >= SHOP_ITEMS.relief.cost){
+      quickSuggestion = {icon:SHOP_ITEMS.relief.icon, text:'กองกลางใกล้ระเบิด! ซื้อยาลดแต้ม -5 ด่วนไหม?', cost:SHOP_ITEMS.relief.cost, action:'quickBuyRelief'};
+    }
+  }
+  if(!inDanger) S._suggestDismissed = false;
+
   // don't replay entrance/catch-up effects when we're just now landing on
   // the game screen (e.g. rejoining mid-game) — only for things that
   // happen live while we're already watching
@@ -1509,6 +1627,7 @@ function renderGame(){
   S._lastHandIds = new Set(me.hand.map(c=>c.id));
 
   const discardChanged = topDiscard && topDiscard.id !== S._lastDiscardTop;
+  if(discardChanged) S._suggestDismissed = false;
   // don't play a catch-up sound if we're just now landing on the game
   // screen (e.g. rejoining mid-game) — only for discards that happen live
   if(discardChanged && topDiscard && !justEnteredGame) playDiscardSound(topDiscard.rank);
@@ -1554,7 +1673,7 @@ function renderGame(){
       </span>
     </div>
 
-    <button class="shop-fab" id="btnShop" title="ร้านค้า"><span>🛒</span><span class="chip-count">${me.chips} ชิป</span></button>
+    <button class="shop-fab" id="btnShop" title="ร้านค้า"><span>🛒</span><span class="chip-count"><span id="fabChipNum">${me.chips}</span> ชิป</span></button>
 
     <div class="ring">
       ${room.order.map(pid=>{
@@ -1565,7 +1684,7 @@ function renderGame(){
           <div class="avatar seat-avatar">${p.avatar || esc(p.name[0]||'?').toUpperCase()}</div>
           <div class="nm">${esc(p.name)}${p.id===S.myId?' (คุณ)':''}</div>
           <div class="cnt">${p.eliminated? 'ตกรอบ' : p.hand.length+' ใบ'}</div>
-          ${!p.eliminated ? `<div class="cnt chip-cnt">💰 ${p.chips||0}</div>` : ''}
+          ${!p.eliminated ? `<div class="cnt chip-cnt">💰 <span class="chip-num" data-pid="${p.id}">${p.chips||0}</span></div>` : ''}
         </div>`;
       }).join('')}
     </div>
@@ -1598,6 +1717,14 @@ function renderGame(){
         : `<b>รอ ${esc(curPlayer?.name||'')}</b> กำลัง${room.turnPhase==='draw'?'จั่วไพ่':'เลือกไพ่ทิ้ง'}...`}
       <div class="timer-bar"><div class="timer-fill" style="width:${pct}%"></div></div>
     </div>
+
+    ${quickSuggestion && !S._suggestDismissed ? `
+      <div class="quick-suggest">
+        <span class="quick-suggest-icon">${quickSuggestion.icon}</span>
+        <span class="quick-suggest-text">${quickSuggestion.text}</span>
+        <button class="btn btn-gold" id="quickSuggestBuy" data-action="${quickSuggestion.action}">ซื้อด่วน (${quickSuggestion.cost} ชิป)</button>
+        <button class="quick-suggest-dismiss" id="quickSuggestDismiss" title="ปิด">✕</button>
+      </div>` : ''}
 
     ${isMyTurn && room.turnPhase==='draw' && !me.peekPending ? `
       <div class="drawpile-area">
@@ -1674,6 +1801,16 @@ function renderGame(){
   }
 
   document.getElementById('btnShop').onclick = ()=>{ S.showShop = true; render(); };
+  const quickBuyBtn = document.getElementById('quickSuggestBuy');
+  if(quickBuyBtn){
+    quickBuyBtn.onclick = ()=>{
+      const action = quickBuyBtn.dataset.action;
+      if(action==='quickBuyShield'){ beep(660,.14,'sine'); buyShield(); }
+      else if(action==='quickBuyRelief'){ beep(320,.16,'sawtooth'); buyRelief(); }
+    };
+  }
+  const quickDismissBtn = document.getElementById('quickSuggestDismiss');
+  if(quickDismissBtn) quickDismissBtn.onclick = ()=>{ S._suggestDismissed = true; render(); };
   if(me.peekPending){
     document.querySelectorAll('.peekPickBtn').forEach(b=>{
       b.onclick = ()=>{ beep(700,.1,'sine'); resolvePeek(parseInt(b.dataset.idx,10)); };
@@ -1716,6 +1853,20 @@ function renderGame(){
     const bMulligan = document.getElementById('buyMulligan');
     if(bMulligan) bMulligan.onclick = openMulligan;
   }
+
+  // count-up/down animation for numbers that changed since the last render
+  S._lastChipsShown = S._lastChipsShown || {};
+  animateCountUp(document.querySelector('.gauge .num .v'), S._lastCenterShown ?? room.centerTotal, room.centerTotal);
+  S._lastCenterShown = room.centerTotal;
+  const fabEl = document.getElementById('fabChipNum');
+  if(fabEl) animateCountUp(fabEl, S._lastChipsShown[S.myId] ?? me.chips, me.chips);
+  document.querySelectorAll('.chip-num').forEach(el=>{
+    const pid = el.dataset.pid;
+    const p = room.players.find(pl=>pl.id===pid);
+    if(!p) return;
+    animateCountUp(el, S._lastChipsShown[pid] ?? p.chips, p.chips);
+  });
+  room.players.forEach(p=>{ S._lastChipsShown[p.id] = p.chips; });
 }
 
 function shopModalHtml(me){
@@ -2055,9 +2206,16 @@ async function init(){
   const session = loadSession();
   if(session){
     app.innerHTML = `
-      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:70vh; gap:16px; color:var(--muted);">
-        <div class="spinner"></div>
-        <div>กำลังเชื่อมต่อกลับเข้าห้อง...</div>
+      <div class="skeleton-screen">
+        <div style="display:flex; align-items:center; justify-content:center; gap:10px; margin-bottom:20px; color:var(--muted);">
+          <div class="spinner" style="width:20px; height:20px; border-width:2px;"></div>
+          <span>กำลังเชื่อมต่อกลับเข้าห้อง...</span>
+        </div>
+        <div class="skeleton-block" style="width:55%; height:34px; margin:0 auto 22px;"></div>
+        <div class="skeleton-block" style="width:100%; height:88px; margin-bottom:14px; border-radius:18px;"></div>
+        <div class="skeleton-block" style="width:100%; height:58px; margin-bottom:10px; border-radius:14px;"></div>
+        <div class="skeleton-block" style="width:100%; height:58px; margin-bottom:10px; border-radius:14px;"></div>
+        <div class="skeleton-block" style="width:100%; height:58px; border-radius:14px;"></div>
       </div>`;
     const room = await loadRoom(session.roomCode);
     const stillIn = room && room.players.some(p=>p.id===session.myId);
