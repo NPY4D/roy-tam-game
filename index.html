@@ -739,6 +739,7 @@ function normalizeRoom(r){
   r.log = r.log || [];
   r.stats = r.stats || {};
   r.capMode = r.capMode || 'normal';
+  r.createdAt = r.createdAt || 0;
   if(r.capTarget===undefined) r.capTarget = 100;
   r.roundTurnCounter = r.roundTurnCounter || 0;
   if(r.winnerId===undefined) r.winnerId = null;
@@ -958,7 +959,7 @@ async function createRoom(){
   if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
   const code = roomCodeGen();
   const room = {
-    code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby',
+    code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby', createdAt:Date.now(),
     players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null, missedTurns:0}],
     order:[], currentIndex:0, direction:1,
     drawPile:[], discardPile:[], centerTotal:0, capTarget:100, roundTurnCounter:0,
@@ -977,18 +978,31 @@ async function createRoom(){
 // level (not just "rooms/$code"), since listing children needs a rule on
 // the parent node. If that hasn't been added, this fails with a
 // permission error and we show a hint instead of crashing.
+const PUBLIC_ROOM_MAX_AGE_MS = 90*60*1000; // 90 minutes — a lobby idle longer than this is almost certainly abandoned
 async function fetchPublicRooms(){
   try{
-    const snap = await db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(20).once('value');
+    const snap = await db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(30).once('value');
     const rooms = [];
+    const staleKeys = [];
+    const now = Date.now();
     snap.forEach(child=>{
       const r = child.val();
-      if(r && Array.isArray(r.players) && r.players.length>0 && r.players.length<6){
+      if(!r || !Array.isArray(r.players)) return;
+      const age = now - (r.createdAt||0);
+      if(age > PUBLIC_ROOM_MAX_AGE_MS){
+        // abandoned lobby that was never started or cleaned up — quietly
+        // remove it so it stops cluttering the list for everyone else too
+        staleKeys.push(child.key);
+        return;
+      }
+      if(r.players.length>0 && r.players.length<6){
         const host = r.players.find(p=>p.id===r.hostId) || r.players[0];
-        rooms.push({code: r.code || child.key, hostName: host.name||'?', count:r.players.length, mode:r.mode});
+        rooms.push({code: r.code || child.key, hostName: host.name||'?', count:r.players.length, mode:r.mode, createdAt:r.createdAt||0});
       }
     });
-    rooms.reverse();
+    rooms.sort((a,b)=> b.createdAt - a.createdAt); // newest first
+    // fire-and-forget cleanup, don't block showing the list on it
+    staleKeys.forEach(key=>{ db.ref('rooms/'+key).remove().catch(()=>{}); });
     return rooms;
   }catch(e){
     return 'error';
