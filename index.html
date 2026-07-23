@@ -849,6 +849,33 @@ function stopPolling(){
   if(S.roomCode){ db.ref('rooms/'+S.roomCode).off(); }
 }
 
+/* ---------- host presence: auto-clean an abandoned lobby ----------
+   Without this, a room the host created just sits in Firebase forever if
+   they close the tab / lose signal before clicking "leave" — it keeps
+   showing up in the public "ห้องที่เปิดอยู่" list for everyone else even
+   though nobody's actually there anymore. Firebase's onDisconnect() lets
+   the *server* run a cleanup write the instant it notices the host's
+   socket drop, no beforeunload/heartbeat needed (which mobile browsers
+   often don't fire reliably anyway).
+   Only armed while status is 'lobby': once the game actually starts we
+   disarm it, so a host's brief network hiccup mid-game doesn't delete the
+   room out from under everyone else — the existing missed-turn/auto-play
+   system already covers an absent player mid-game. Re-armed if the host
+   resets back to a lobby via "เล่นรอบใหม่". */
+let presenceConnRef = null;
+function armHostAutoCleanup(code){
+  disarmHostAutoCleanup();
+  const roomRef = db.ref('rooms/'+code);
+  presenceConnRef = db.ref('.info/connected');
+  presenceConnRef.on('value', snap=>{
+    if(snap.val()===true) roomRef.onDisconnect().remove();
+  });
+}
+function disarmHostAutoCleanup(){
+  if(S.roomCode) db.ref('rooms/'+S.roomCode).onDisconnect().cancel();
+  if(presenceConnRef){ presenceConnRef.off(); presenceConnRef=null; }
+}
+
 /* ---------- game helpers ---------- */
 function nextIndex(room){
   const n = room.order.length;
@@ -970,7 +997,9 @@ async function createRoom(){
   if(!ok){ S.err='สร้างห้องไม่สำเร็จ ลองใหม่'; render(); return; }
   S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
   saveSession();
-  startPolling(); render();
+  startPolling();
+  armHostAutoCleanup(code);
+  render();
 }
 
 // browse rooms that are still in the lobby (waiting for players) and not
@@ -1077,6 +1106,7 @@ async function startGame(){
   const capNote = fresh.capMode==='shrink' ? ' (กรอบหด: เพดานจะลดทุกรอบ)' : fresh.capMode==='fog' ? ' (เป้าลับ: ไม่มีใครรู้เพดานจริง)' : '';
   fresh.log = [`เริ่มเกม! โหมด ${fresh.mode==='A'?'คัดออก':'จบทันที'}${capNote} — ตาแรกของ ${fresh.players[0].name}`];
   await saveRoom(S.roomCode, fresh);
+  disarmHostAutoCleanup();
   S.room = fresh; S.screen='game'; render();
 }
 
@@ -1338,6 +1368,7 @@ async function playAgain(){
   fresh.winnerId=null; fresh.loserId=null;
   fresh.log=[`เตรียมรอบใหม่`];
   await saveRoom(S.roomCode, fresh);
+  armHostAutoCleanup(S.roomCode);
   S.room = fresh; S.screen='lobby'; render();
 }
 
@@ -1380,6 +1411,14 @@ async function kickPlayer(targetId){
 }
 
 function leaveRoom(){
+  const room = S.room;
+  const wasHostInLobby = room && room.hostId===S.myId && room.status==='lobby';
+  disarmHostAutoCleanup();
+  if(wasHostInLobby && S.roomCode){
+    // host explicitly leaving an unstarted lobby — remove it right away
+    // instead of waiting for the disconnect handler or the stale-room sweep
+    db.ref('rooms/'+S.roomCode).remove().catch(()=>{});
+  }
   stopPolling();
   clearSession();
   S.roomCode=''; S.room=null; S.screen='landing'; render();
@@ -2421,6 +2460,7 @@ async function init(){
       S.screen = room.status==='playing' ? 'game' : room.status==='finished' ? 'ended' : 'lobby';
       saveSession();
       startPolling();
+      if(room.hostId===session.myId && room.status==='lobby') armHostAutoCleanup(session.roomCode);
       render();
       return;
     }
