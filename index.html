@@ -739,7 +739,6 @@ function normalizeRoom(r){
   r.log = r.log || [];
   r.stats = r.stats || {};
   r.capMode = r.capMode || 'normal';
-  r.createdAt = r.createdAt || 0;
   if(r.capTarget===undefined) r.capTarget = 100;
   r.roundTurnCounter = r.roundTurnCounter || 0;
   if(r.winnerId===undefined) r.winnerId = null;
@@ -802,6 +801,7 @@ const S = {
   showManage:false,
   showJoinBox:false,
   publicRooms:undefined,
+  roomsPollTimer:null,
   swapPending:null,
   spyPending:null,
   mulliganPending:null,
@@ -847,45 +847,6 @@ function startPolling(){
 function stopPolling(){
   if(S.pollTimer){ clearInterval(S.pollTimer); S.pollTimer=null; }
   if(S.roomCode){ db.ref('rooms/'+S.roomCode).off(); }
-}
-
-/* ---------- host presence: auto-clean an abandoned lobby ----------
-   Without this, a room the host created just sits in Firebase forever if
-   they close the tab / lose signal before clicking "leave" — it keeps
-   showing up in the public "ห้องที่เปิดอยู่" list for everyone else even
-   though nobody's actually there anymore. Firebase's onDisconnect() lets
-   the *server* run a cleanup write the instant it notices the host's
-   socket drop, no beforeunload/heartbeat needed (which mobile browsers
-   often don't fire reliably anyway).
-   Only armed while status is 'lobby': once the game actually starts we
-   disarm it, so a host's brief network hiccup mid-game doesn't delete the
-   room out from under everyone else — the existing missed-turn/auto-play
-   system already covers an absent player mid-game. Re-armed if the host
-   resets back to a lobby via "เล่นรอบใหม่". */
-let presenceConnRef = null;
-let heartbeatTimer = null;
-function armHostAutoCleanup(code){
-  disarmHostAutoCleanup();
-  const roomRef = db.ref('rooms/'+code);
-  presenceConnRef = db.ref('.info/connected');
-  presenceConnRef.on('value', snap=>{
-    if(snap.val()===true) roomRef.onDisconnect().remove();
-  });
-  // heartbeat: onDisconnect isn't instant or guaranteed — mobile browsers
-  // especially (iOS Safari in particular) can keep a "closed" tab's socket
-  // alive in the background for a long while before the server notices it's
-  // gone. So we also stamp a timestamp every 20s while actively in the
-  // lobby; fetchPublicRooms() below hides any room whose stamp is more than
-  // ~60s old, which works regardless of whether the disconnect event ever
-  // fires — it only requires the host's JS to have stopped running.
-  const beat = ()=> roomRef.child('heartbeatAt').set(Date.now()).catch(()=>{});
-  beat();
-  heartbeatTimer = setInterval(beat, 20000);
-}
-function disarmHostAutoCleanup(){
-  if(S.roomCode) db.ref('rooms/'+S.roomCode).onDisconnect().cancel();
-  if(presenceConnRef){ presenceConnRef.off(); presenceConnRef=null; }
-  if(heartbeatTimer){ clearInterval(heartbeatTimer); heartbeatTimer=null; }
 }
 
 /* ---------- game helpers ---------- */
@@ -998,7 +959,7 @@ async function createRoom(){
   if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
   const code = roomCodeGen();
   const room = {
-    code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby', createdAt:Date.now(), heartbeatAt:Date.now(),
+    code, hostId:S.myId, mode:'A', capMode:'normal', status:'lobby',
     players:[{id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, hand:[], eliminated:false, chips:0, shieldOwned:false, shieldUsed:false, reliefBought:0, swapBought:0, peekBought:0, peekPending:null, spyBought:0, mulliganBought:0, spyResult:null, missedTurns:0}],
     order:[], currentIndex:0, direction:1,
     drawPile:[], discardPile:[], centerTotal:0, capTarget:100, roundTurnCounter:0,
@@ -1009,9 +970,7 @@ async function createRoom(){
   if(!ok){ S.err='สร้างห้องไม่สำเร็จ ลองใหม่'; render(); return; }
   S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
   saveSession();
-  startPolling();
-  armHostAutoCleanup(code);
-  render();
+  startPolling(); render();
 }
 
 // browse rooms that are still in the lobby (waiting for players) and not
@@ -1019,34 +978,18 @@ async function createRoom(){
 // level (not just "rooms/$code"), since listing children needs a rule on
 // the parent node. If that hasn't been added, this fails with a
 // permission error and we show a hint instead of crashing.
-const PUBLIC_ROOM_MAX_AGE_MS = 90*60*1000; // 90 minutes — a lobby idle longer than this is almost certainly abandoned; safe to delete outright
-const HEARTBEAT_STALE_MS = 60*1000; // no heartbeat in the last 60s — host's tab is gone; hide from the list (but don't delete, could be a network blip)
 async function fetchPublicRooms(){
   try{
-    const snap = await db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(30).once('value');
+    const snap = await db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(20).once('value');
     const rooms = [];
-    const staleKeys = [];
-    const now = Date.now();
     snap.forEach(child=>{
       const r = child.val();
-      if(!r || !Array.isArray(r.players)) return;
-      const age = now - (r.createdAt||0);
-      if(age > PUBLIC_ROOM_MAX_AGE_MS){
-        // abandoned lobby that was never started or cleaned up — quietly
-        // remove it so it stops cluttering the list for everyone else too
-        staleKeys.push(child.key);
-        return;
-      }
-      const freshness = r.heartbeatAt || r.createdAt || 0;
-      if(now - freshness > HEARTBEAT_STALE_MS) return; // host's gone quiet — hide, don't delete yet
-      if(r.players.length>0 && r.players.length<6){
+      if(r && Array.isArray(r.players) && r.players.length>0 && r.players.length<6){
         const host = r.players.find(p=>p.id===r.hostId) || r.players[0];
-        rooms.push({code: r.code || child.key, hostName: host.name||'?', count:r.players.length, mode:r.mode, createdAt:r.createdAt||0});
+        rooms.push({code: r.code || child.key, hostName: host.name||'?', count:r.players.length, mode:r.mode});
       }
     });
-    rooms.sort((a,b)=> b.createdAt - a.createdAt); // newest first
-    // fire-and-forget cleanup, don't block showing the list on it
-    staleKeys.forEach(key=>{ db.ref('rooms/'+key).remove().catch(()=>{}); });
+    rooms.reverse();
     return rooms;
   }catch(e){
     return 'error';
@@ -1121,7 +1064,6 @@ async function startGame(){
   const capNote = fresh.capMode==='shrink' ? ' (กรอบหด: เพดานจะลดทุกรอบ)' : fresh.capMode==='fog' ? ' (เป้าลับ: ไม่มีใครรู้เพดานจริง)' : '';
   fresh.log = [`เริ่มเกม! โหมด ${fresh.mode==='A'?'คัดออก':'จบทันที'}${capNote} — ตาแรกของ ${fresh.players[0].name}`];
   await saveRoom(S.roomCode, fresh);
-  disarmHostAutoCleanup();
   S.room = fresh; S.screen='game'; render();
 }
 
@@ -1383,7 +1325,6 @@ async function playAgain(){
   fresh.winnerId=null; fresh.loserId=null;
   fresh.log=[`เตรียมรอบใหม่`];
   await saveRoom(S.roomCode, fresh);
-  armHostAutoCleanup(S.roomCode);
   S.room = fresh; S.screen='lobby'; render();
 }
 
@@ -1426,14 +1367,6 @@ async function kickPlayer(targetId){
 }
 
 function leaveRoom(){
-  const room = S.room;
-  const wasHostInLobby = room && room.hostId===S.myId && room.status==='lobby';
-  disarmHostAutoCleanup();
-  if(wasHostInLobby && S.roomCode){
-    // host explicitly leaving an unstarted lobby — remove it right away
-    // instead of waiting for the disconnect handler or the stale-room sweep
-    db.ref('rooms/'+S.roomCode).remove().catch(()=>{});
-  }
   stopPolling();
   clearSession();
   S.roomCode=''; S.room=null; S.screen='landing'; render();
@@ -1590,24 +1523,7 @@ function renderLanding(){
           <h3 style="color:var(--gold-soft); margin:0;">🌐 ห้องที่เปิดอยู่</h3>
           <button class="btn btn-ghost" id="btnRefreshRooms" style="padding:4px 10px; font-size:.72rem;">🔄 รีเฟรช</button>
         </div>
-        ${S.publicRooms===undefined || S.publicRooms==='loading' ? `
-          <div style="display:flex; align-items:center; gap:10px; color:var(--muted); padding:8px 0;">
-            <span class="spinner" style="width:18px; height:18px; border-width:2px;"></span>
-            <span style="font-size:.85rem;">กำลังค้นหาห้อง...</span>
-          </div>`
-        : S.publicRooms==='error' ? `
-          <p class="small-note" style="margin-top:0;">ไม่สามารถโหลดรายชื่อห้องได้ (อาจต้องเปิดสิทธิ์อ่านที่ระดับ "rooms" ใน Firebase rules ก่อน) — ใส่รหัสห้องด้วยตัวเองด้านบนแทนได้เลย</p>`
-        : S.publicRooms.length===0 ? `
-          <p class="small-note" style="margin-top:0;">ตอนนี้ยังไม่มีห้องเปิดอยู่ ลองสร้างห้องใหม่ดูสิ</p>`
-        : S.publicRooms.map(r=>`
-          <button class="public-room-row" data-code="${r.code}">
-            <span class="room-code-chip">${r.code}</span>
-            <span class="public-room-info">
-              <span class="public-room-host">${esc(r.hostName)}</span>
-              <span class="small-note" style="margin:0;">${r.count}/6 คน · ${r.mode==='A'?'คัดออก':'จบทันที'}</span>
-            </span>
-            <span class="public-room-go">เข้าร่วม →</span>
-          </button>`).join('')}
+        <div id="publicRoomsList">${publicRoomsListHtml()}</div>
       </div>
     </div>
     ${S.err? `<div class="panel" style="border-color:var(--danger); color:#ffb3ac; margin-top:14px;">${esc(S.err)}</div>` : ''}
@@ -1632,20 +1548,51 @@ function renderLanding(){
     render();
     document.getElementById('codeInput')?.focus();
     if(S.publicRooms===undefined) loadPublicRooms();
+    else startRoomsPolling();
   };
   document.getElementById('btnDoJoin')?.addEventListener('click', (e)=>{
     const v = document.getElementById('codeInput').value;
     const btn = e.currentTarget;
     btn.disabled = true;
     btn.textContent = 'กำลังเข้าร่วม...';
+    stopRoomsPolling();
     joinRoom(v);
   });
+  wirePublicRoomsHandlers();
+}
+
+// ---- public rooms list: content + wiring kept separate from renderLanding
+// so a background refresh can patch just this one subtree (see
+// silentRefreshPublicRooms) instead of re-rendering the whole landing page,
+// which would blow away input focus / restart every animation → flicker.
+function publicRoomsListHtml(){
+  return S.publicRooms===undefined || S.publicRooms==='loading' ? `
+      <div style="display:flex; align-items:center; gap:10px; color:var(--muted); padding:8px 0;">
+        <span class="spinner" style="width:18px; height:18px; border-width:2px;"></span>
+        <span style="font-size:.85rem;">กำลังค้นหาห้อง...</span>
+      </div>`
+    : S.publicRooms==='error' ? `
+      <p class="small-note" style="margin-top:0;">ไม่สามารถโหลดรายชื่อห้องได้ (อาจต้องเปิดสิทธิ์อ่านที่ระดับ "rooms" ใน Firebase rules ก่อน) — ใส่รหัสห้องด้วยตัวเองด้านบนแทนได้เลย</p>`
+    : S.publicRooms.length===0 ? `
+      <p class="small-note" style="margin-top:0;">ตอนนี้ยังไม่มีห้องเปิดอยู่ ลองสร้างห้องใหม่ดูสิ</p>`
+    : S.publicRooms.map(r=>`
+      <button class="public-room-row" data-code="${r.code}">
+        <span class="room-code-chip">${r.code}</span>
+        <span class="public-room-info">
+          <span class="public-room-host">${esc(r.hostName)}</span>
+          <span class="small-note" style="margin:0;">${r.count}/6 คน · ${r.mode==='A'?'คัดออก':'จบทันที'}</span>
+        </span>
+        <span class="public-room-go">เข้าร่วม →</span>
+      </button>`).join('');
+}
+function wirePublicRoomsHandlers(){
   const refreshBtn = document.getElementById('btnRefreshRooms');
   if(refreshBtn) refreshBtn.onclick = ()=> loadPublicRooms();
   document.querySelectorAll('.public-room-row').forEach(row=>{
     row.onclick = ()=>{
       row.disabled = true;
       row.querySelector('.public-room-go').textContent = 'กำลังเข้าร่วม...';
+      stopRoomsPolling();
       joinRoom(row.dataset.code);
     };
   });
@@ -1657,6 +1604,33 @@ async function loadPublicRooms(){
   const result = await fetchPublicRooms();
   S.publicRooms = result;
   render();
+  startRoomsPolling();
+}
+
+// Auto-refresh the open-rooms list every 1s. Instead of calling the full
+// render() (which would wipe the name input's focus and restart every
+// looping animation on the page → visible flicker), this only touches the
+// #publicRoomsList subtree, and only when the fetched data actually
+// changed — so most ticks don't touch the DOM at all.
+function startRoomsPolling(){
+  stopRoomsPolling();
+  S.roomsPollTimer = setInterval(silentRefreshPublicRooms, 1000);
+}
+function stopRoomsPolling(){
+  if(S.roomsPollTimer){ clearInterval(S.roomsPollTimer); S.roomsPollTimer=null; }
+}
+async function silentRefreshPublicRooms(){
+  if(S.screen!=='landing' || !S.showJoinBox || !document.getElementById('publicRoomsList')){
+    stopRoomsPolling();
+    return;
+  }
+  const result = await fetchPublicRooms();
+  if(JSON.stringify(result) === JSON.stringify(S.publicRooms)) return; // nothing changed, skip the DOM write
+  S.publicRooms = result;
+  const target = document.getElementById('publicRoomsList');
+  if(!target) return; // box got closed while the fetch was in flight
+  target.innerHTML = publicRoomsListHtml();
+  wirePublicRoomsHandlers();
 }
 
 function renderLobby(){
@@ -1803,11 +1777,16 @@ function renderGame(){
   // fog: qualitative risk zone based on actual headroom to the real (hidden)
   // cap — e.g. secret cap 102: sitting at 99 (diff 3) reads "อันตราย",
   // sitting at 93 (diff 9) reads "เริ่มเสี่ยง". Never shows the numbers themselves.
+  // Note: there's intentionally no 4th "most dangerous" tier for diffToCap<=0 —
+  // that state can only be reached the instant centerTotal reaches the real
+  // cap exactly, so showing a distinct label right at that moment would
+  // effectively announce "the cap equals your current total", defeating
+  // the whole point of fog mode. Keeping it merged into "อันตราย" preserves
+  // the suspense.
   const fogZone = !isFog ? null
     : diffToCap > 15 ? {icon:'🟢', text:'ปลอดภัย'}
     : diffToCap > 5 ? {icon:'🟡', text:'เริ่มเสี่ยง'}
-    : diffToCap > 0 ? {icon:'🟠', text:'อันตราย'}
-    : {icon:'🔴', text:'อันตรายที่สุด!'};
+    : {icon:'🔴', text:'อันตราย'};
 
   // quick-buy suggestion: a contextual shortcut (like the peek button next
   // to the draw pile) that surfaces the most useful defensive item right
@@ -2475,7 +2454,6 @@ async function init(){
       S.screen = room.status==='playing' ? 'game' : room.status==='finished' ? 'ended' : 'lobby';
       saveSession();
       startPolling();
-      if(room.hostId===session.myId && room.status==='lobby') armHostAutoCleanup(session.roomCode);
       render();
       return;
     }
