@@ -117,6 +117,19 @@
   }
 
   .brand{text-align:center; margin:18px 0 30px;}
+  .game-switcher{display:flex; gap:8px; justify-content:center; margin-bottom:6px; flex-wrap:wrap;}
+  .game-switch-btn{
+    display:flex; flex-direction:column; align-items:center; gap:2px;
+    padding:8px 16px; border-radius:12px; border:1px solid rgba(212,175,55,.25);
+    background:rgba(255,255,255,.03); color:var(--cream); text-decoration:none; font-size:.72rem; min-width:74px;
+    transition:all .15s ease;
+  }
+  .game-switch-btn .icon{font-size:1.3rem;}
+  .game-switch-btn span{font-weight:600; font-size:.72rem;}
+  .game-switch-btn i{font-style:normal; font-size:.6rem; color:var(--muted);}
+  .game-switch-btn:hover:not(.disabled){border-color:var(--gold); background:rgba(212,175,55,.08); transform:translateY(-2px);}
+  .game-switch-btn.active{border-color:var(--gold); background:rgba(212,175,55,.14); box-shadow:0 0 0 1px rgba(212,175,55,.3) inset;}
+  .game-switch-btn.disabled{opacity:.4; cursor:not-allowed;}
   .brand h1{
     font-size:clamp(2.4rem,7.5vw,3.6rem); font-weight:700; font-style:italic; letter-spacing:.5px;
     color:var(--gold-soft); text-shadow:0 2px 18px rgba(212,175,55,.4);
@@ -1524,6 +1537,11 @@ function render(){
 function renderLanding(){
   app.innerHTML = `
     <div class="${sceneAnim}">
+    <div class="game-switcher">
+      <span class="game-switch-btn active"><span class="icon">🂠</span><span>ร้อยแต้ม</span></span>
+      <a href="blackjack.html" class="game-switch-btn"><span class="icon">🂡</span><span>Blackjack</span></a>
+      <span class="game-switch-btn disabled"><span class="icon">🃏</span><span>โป๊กเกอร์</span><i>เร็วๆนี้</i></span>
+    </div>
     <div class="landing-illustration">
       <svg viewBox="0 0 200 130" width="170" height="110" aria-hidden="true">
         <g class="illus-card" transform="translate(62,66) rotate(-16)">

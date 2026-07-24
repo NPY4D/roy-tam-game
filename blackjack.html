@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blackjack</title>
+<meta name="theme-color" content="#0b2a1f">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='29' fill='%230b2a1f' stroke='%23d4af37' stroke-width='4'/%3E%3Ctext x='32' y='44' font-size='28' text-anchor='middle' fill='%23eecf82' font-family='Georgia,serif'%3EBJ%3C/text%3E%3C/svg%3E">
+<!--
+=====================================================================
+ไฟล์นี้ใช้ Firebase โปรเจกต์เดียวกับ index.html (ร้อยแต้ม) แต่เก็บข้อมูล
+คนละ node กัน (bjrooms / bjpresence) ไม่ชนกับเกมร้อยแต้ม
+
+ต้องเพิ่ม rule 2 บรรทัดนี้ใน Firebase Realtime Database > Rules
+(นอกเหนือจาก rooms/presence ที่มีอยู่แล้ว):
+   "bjrooms":   { ".read": true, ".write": true },
+   "bjpresence":{ ".read": true, ".write": true }
+=====================================================================
+-->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Taviraj:ital,wght@0,300;0,500;0,600;0,700;0,800;1,600&family=Sarabun:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --felt-1:#0b2a1f; --felt-2:#134a35; --felt-3:#1c6247;
+    --gold:#d4af37; --gold-soft:#eecf82; --gold-deep:#9c7420;
+    --cream:#faf6ea; --red:#b23a32; --ink:#16211b;
+    --danger:#e0483e; --warn:#d9822b; --muted:#9fb8a9;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
+  body{
+    font-family:'Sarabun',sans-serif;
+    background:radial-gradient(ellipse at 50% -10%, var(--felt-3) 0%, var(--felt-1) 60%), var(--felt-1);
+    color:var(--cream); min-height:100vh; -webkit-font-smoothing:antialiased; overflow-x:hidden; position:relative;
+  }
+  body::before{
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:radial-gradient(circle at 20% 15%, rgba(212,175,55,.10), transparent 45%),
+               radial-gradient(circle at 82% 78%, rgba(212,175,55,.08), transparent 40%);
+    animation:ambientDrift 12s ease-in-out infinite alternate;
+  }
+  @keyframes ambientDrift{0%{opacity:.6; transform:translate(0,0) scale(1);} 100%{opacity:1; transform:translate(-1.5%,1.5%) scale(1.05);}}
+  #app{position:relative; z-index:1; max-width:900px; margin:0 auto; padding:20px 16px 60px; min-height:100vh;}
+  @media (prefers-reduced-motion:reduce){ body::before{animation:none;} }
+  :focus-visible{outline:2px solid var(--gold); outline-offset:2px;}
+  h1,h2,h3{font-family:'Taviraj',serif; margin:0; font-weight:600;}
+  button{font-family:'Sarabun',sans-serif; cursor:pointer;}
+
+  .game-switcher{display:flex; gap:8px; justify-content:center; margin-bottom:14px; flex-wrap:wrap;}
+  .game-switch-btn{
+    display:flex; flex-direction:column; align-items:center; gap:2px;
+    padding:8px 16px; border-radius:12px; border:1px solid rgba(212,175,55,.25);
+    background:rgba(255,255,255,.03); color:var(--cream); text-decoration:none; font-size:.72rem; min-width:74px;
+    transition:all .15s ease;
+  }
+  .game-switch-btn .icon{font-size:1.3rem;}
+  .game-switch-btn span{font-weight:600; font-size:.72rem;}
+  .game-switch-btn i{font-style:normal; font-size:.6rem; color:var(--muted);}
+  .game-switch-btn:hover:not(.disabled){border-color:var(--gold); background:rgba(212,175,55,.08); transform:translateY(-2px);}
+  .game-switch-btn.active{border-color:var(--gold); background:rgba(212,175,55,.14); box-shadow:0 0 0 1px rgba(212,175,55,.3) inset;}
+  .game-switch-btn.disabled{opacity:.4; cursor:not-allowed;}
+
+  .brand{text-align:center; margin:6px 0 26px;}
+  .brand h1{
+    font-size:clamp(2.2rem,7vw,3.2rem); font-weight:700; font-style:italic; letter-spacing:.5px;
+    background:linear-gradient(100deg, var(--gold-soft) 30%, #fff6da 45%, var(--gold-soft) 60%, var(--gold-soft) 100%);
+    background-size:220% auto; -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    animation:titleShimmer 4.5s linear infinite;
+  }
+  @keyframes titleShimmer{0%{background-position:0% 0;} 100%{background-position:200% 0;}}
+  .brand .sub{color:var(--muted); font-size:.95rem; margin-top:6px;}
+
+  .panel{
+    background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+    border:1px solid rgba(212,175,55,.25); border-radius:18px; padding:22px;
+    box-shadow:0 14px 34px rgba(0,0,0,.4), 0 1px 0 rgba(255,255,255,.06) inset;
+    position:relative;
+  }
+  .panel::before{content:''; position:absolute; left:16px; right:16px; top:0; height:1px; background:linear-gradient(90deg, transparent, rgba(212,175,55,.5), transparent);}
+  .panel + .panel{margin-top:16px;}
+  @keyframes panelRise{from{opacity:0; transform:translateY(14px);} to{opacity:1; transform:translateY(0);}}
+  .scene-in .panel{animation:panelRise .5s cubic-bezier(.2,.8,.2,1) both;}
+  .scene-in .panel:nth-of-type(1){animation-delay:.02s;}
+  .scene-in .panel:nth-of-type(2){animation-delay:.09s;}
+  .scene-in .panel:nth-of-type(3){animation-delay:.16s;}
+
+  label{display:block; font-size:.85rem; color:var(--muted); margin-bottom:6px;}
+  input[type=text],input[type=number]{
+    width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(212,175,55,.35);
+    background:rgba(0,0,0,.25); color:var(--cream); font-size:1rem; font-family:'Sarabun',sans-serif;
+  }
+  input[type=text]:focus,input[type=number]:focus{border-color:var(--gold); box-shadow:0 0 0 3px rgba(212,175,55,.15); outline:none;}
+  input::placeholder{color:#5f7568;}
+
+  .btn{display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:12px 20px; border-radius:12px; border:1px solid transparent; font-size:1rem; font-weight:600; transition:transform .12s ease, box-shadow .12s ease; position:relative; overflow:hidden;}
+  .btn-gold{background:linear-gradient(180deg,var(--gold-soft) 0%, var(--gold) 55%, var(--gold-deep) 100%); color:#2a2005; box-shadow:0 4px 14px rgba(212,175,55,.35), 0 1px 0 rgba(255,255,255,.5) inset, 0 -2px 0 rgba(0,0,0,.15) inset;}
+  .btn-gold:hover{transform:translateY(-2px);}
+  .btn-gold:disabled{opacity:.4; cursor:not-allowed; transform:none; box-shadow:none;}
+  .btn-ghost{background:transparent; color:var(--cream); border:1px solid rgba(255,255,255,.25);}
+  .btn-ghost:hover{border-color:var(--gold); transform:translateY(-2px); background:rgba(212,175,55,.06);}
+  .btn-danger{background:rgba(224,72,62,.15); color:#ffb3ac; border:1px solid rgba(224,72,62,.4);}
+  .btn-danger:hover{background:rgba(224,72,62,.28); transform:translateY(-2px);}
+  .btn:active{transform:scale(.96);}
+  .btn-row{display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;}
+
+  .avatar-picker{display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;}
+  .avatar-opt{width:44px; height:44px; border-radius:50%; font-size:1.3rem; background:rgba(255,255,255,.04); border:2px solid rgba(212,175,55,.25); display:flex; align-items:center; justify-content:center; transition:all .15s ease;}
+  .avatar-opt:hover{border-color:rgba(212,175,55,.6); transform:translateY(-2px);}
+  .avatar-opt.active{border-color:var(--gold); background:rgba(212,175,55,.18); box-shadow:0 0 0 3px rgba(212,175,55,.18);}
+
+  .spinner{width:36px; height:36px; border-radius:50%; border:3px solid rgba(212,175,55,.25); border-top-color:var(--gold); animation:spinRotate .8s linear infinite;}
+  @keyframes spinRotate{ to{ transform:rotate(360deg); } }
+
+  .room-code-row{display:flex; align-items:stretch; gap:10px;}
+  .room-code{flex:1; font-family:'Space Mono',monospace; letter-spacing:6px; font-size:2rem; text-align:center; color:var(--gold-soft); padding:14px; border:1px dashed rgba(212,175,55,.4); border-radius:12px; background:rgba(0,0,0,.2);}
+  .copy-code-btn{flex-shrink:0; padding:8px 14px; font-size:.85rem; align-self:center; white-space:nowrap;}
+  .copy-code-btn.copied{border-color:var(--gold); color:var(--gold-soft); background:rgba(212,175,55,.1);}
+  @media (max-width:420px){ .room-code{font-size:1.5rem; letter-spacing:4px; padding:12px 8px;} }
+
+  .public-room-row{display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:10px 12px; margin-bottom:8px; border-radius:12px; background:rgba(255,255,255,.03); border:1px solid rgba(212,175,55,.2); transition:all .15s ease;}
+  .public-room-row:last-child{margin-bottom:0;}
+  .public-room-row:hover{border-color:var(--gold); background:rgba(212,175,55,.08); transform:translateY(-1px);}
+  .public-room-row:disabled{opacity:.6; pointer-events:none;}
+  .room-code-chip{font-family:'Space Mono',monospace; font-weight:700; letter-spacing:1px; font-size:.85rem; color:var(--gold-soft); background:rgba(0,0,0,.25); padding:6px 10px; border-radius:8px; flex-shrink:0;}
+  .public-room-info{display:flex; flex-direction:column; gap:2px; flex:1; min-width:0;}
+  .public-room-host{font-weight:600; font-size:.88rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .public-room-go{font-size:.78rem; color:var(--gold-soft); flex-shrink:0; white-space:nowrap;}
+
+  .player-row{display:flex; align-items:center; gap:12px; padding:10px 6px; border-bottom:1px solid rgba(255,255,255,.06);}
+  .player-row:last-child{border-bottom:none;}
+  .avatar{width:38px; height:38px; border-radius:50%; background:linear-gradient(150deg,var(--gold-soft),var(--gold-deep)); color:#2a2005; display:flex; align-items:center; justify-content:center; font-weight:700; flex-shrink:0; box-shadow:0 2px 8px rgba(212,175,55,.3), 0 1px 0 rgba(255,255,255,.5) inset;}
+  .player-name{font-weight:600;}
+  .tag{font-size:.72rem; color:var(--felt-1); background:var(--gold-soft); padding:2px 8px; border-radius:20px; font-weight:700;}
+  .chip-cnt{font-family:'Space Mono',monospace; color:var(--gold-soft); font-size:.85rem;}
+
+  .table-wrap{position:relative; margin:10px 0 18px;}
+  .dealer-area{
+    background:radial-gradient(ellipse at center, var(--felt-2), var(--felt-1));
+    border:2px solid rgba(212,175,55,.3); border-radius:24px; padding:22px 18px; margin-bottom:14px;
+    text-align:center; position:relative; overflow:hidden;
+  }
+  .dealer-area::before{content:'♠ ♥ ♦ ♣ ♠ ♥ ♦ ♣ ♠ ♥ ♦ ♣'; position:absolute; inset:0; z-index:0; pointer-events:none; overflow:hidden; font-size:2rem; line-height:2.4; letter-spacing:1rem; color:rgba(212,175,55,.05); text-align:center;}
+  .dealer-area > *{position:relative; z-index:1;}
+  .dealer-label{font-size:.85rem; color:var(--muted); letter-spacing:2px; margin-bottom:8px;}
+  .hand-row{display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin:6px 0;}
+  .hand-total{font-family:'Space Mono',monospace; font-size:1.3rem; color:var(--gold-soft); font-weight:700; margin-top:6px;}
+
+  .seats-ring{display:flex; flex-wrap:wrap; gap:10px; justify-content:center;}
+  .seat{
+    flex:1 1 150px; max-width:220px; background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.01));
+    border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:14px 10px; text-align:center; position:relative;
+    box-shadow:0 4px 12px rgba(0,0,0,.25); transition:box-shadow .2s ease, border-color .2s ease;
+  }
+  @keyframes pulseRing{0%,100%{box-shadow:0 0 0 3px rgba(212,175,55,.2), 0 0 18px rgba(212,175,55,.3);} 50%{box-shadow:0 0 0 5px rgba(212,175,55,.4), 0 0 30px rgba(212,175,55,.55);}}
+  .seat.turn{border-color:var(--gold); animation:pulseRing 1.9s ease-in-out infinite;}
+  .seat.out{opacity:.45;}
+  .seat .nm{font-weight:600; font-size:.9rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-bottom:4px;}
+  .seat .status-badge{font-size:.68rem; padding:2px 8px; border-radius:20px; display:inline-block; margin-top:6px; font-weight:700;}
+  .badge-playing{background:rgba(212,175,55,.2); color:var(--gold-soft);}
+  .badge-stand{background:rgba(159,184,169,.2); color:var(--muted);}
+  .badge-bust{background:rgba(224,72,62,.2); color:#ffb3ac;}
+  .badge-blackjack{background:linear-gradient(155deg,var(--gold-soft),var(--gold-deep)); color:#2a2005;}
+  .badge-win{background:rgba(80,180,120,.25); color:#9ee8b8;}
+  .badge-lose{background:rgba(224,72,62,.2); color:#ffb3ac;}
+  .badge-push{background:rgba(159,184,169,.2); color:var(--muted);}
+  .badge-waiting{background:rgba(255,255,255,.08); color:var(--muted);}
+  .delta{font-family:'Space Mono',monospace; font-weight:700; font-size:.95rem; margin-top:4px;}
+  .delta.pos{color:#9ee8b8;} .delta.neg{color:#ffb3ac;} .delta.zero{color:var(--muted);}
+
+  .card{width:58px; height:84px; border-radius:9px; background:linear-gradient(155deg, #fffdf7 0%, var(--cream) 55%, #f0ead9 100%); color:var(--ink); display:flex; flex-direction:column; justify-content:space-between; padding:5px; box-shadow:0 4px 10px rgba(0,0,0,.4), 0 1px 0 rgba(255,255,255,.7) inset; font-family:'Space Mono',monospace; font-weight:700; font-size:.92rem; border:1px solid rgba(0,0,0,.08); user-select:none; position:relative;}
+  .card.red{color:var(--red);}
+  .card .mid{font-size:1.35rem; text-align:center;}
+  .card.back{background:repeating-linear-gradient(45deg, var(--felt-2), var(--felt-2) 6px, var(--felt-3) 6px, var(--felt-3) 12px); border:2px solid var(--gold-soft); box-shadow:0 4px 10px rgba(0,0,0,.4), 0 0 0 3px rgba(11,42,31,.6) inset;}
+  .card.back::after{content:'♠'; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:1.3rem; color:rgba(238,207,130,.5);}
+  .card.small{width:42px; height:60px; font-size:.68rem;}
+  .card.small .mid{font-size:1rem;}
+  @keyframes dealIn{0%{opacity:0; transform:translateY(30px) translateX(38px) rotate(16deg) scale(.7);} 60%{opacity:1; transform:translateY(-4px) translateX(-3px) rotate(-2deg) scale(1.03);} 100%{opacity:1; transform:translateY(0) translateX(0) rotate(0) scale(1);}}
+  .deal-in{animation:dealIn .6s cubic-bezier(.22,.75,.25,1) both;}
+
+  .chip-btn{
+    display:flex; flex-direction:column; align-items:center; justify-content:center; width:60px; height:60px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, var(--gold-soft), var(--gold-deep)); color:#2a2005; font-weight:700; font-size:.85rem;
+    border:3px dashed rgba(255,255,255,.4); box-shadow:0 4px 10px rgba(0,0,0,.35); transition:transform .12s ease;
+  }
+  .chip-btn:hover{transform:translateY(-3px) scale(1.05);}
+  .chip-btn:active{transform:scale(.94);}
+  .chip-row{display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin:14px 0;}
+  .bet-display{font-family:'Space Mono',monospace; font-size:2.2rem; color:var(--gold-soft); text-align:center; font-weight:700;}
+
+  .timer-bar{height:6px; border-radius:6px; background:rgba(255,255,255,.12); margin-top:8px; overflow:hidden;}
+  .timer-fill{height:100%; background:linear-gradient(90deg,var(--gold-soft),var(--gold)); transition:width 1s linear;}
+  .turn-banner{text-align:center; padding:12px; border-radius:14px; margin-bottom:12px; background:rgba(212,175,55,.1); border:1px solid rgba(212,175,55,.3);}
+  @keyframes bannerGlow{0%,100%{border-color:rgba(212,175,55,.3);} 50%{border-color:rgba(212,175,55,.75);}}
+  .turn-banner.mine{background:rgba(212,175,55,.22); animation:bannerGlow 1.9s ease-in-out infinite;}
+
+  .log-panel{margin-top:16px; max-height:130px; overflow-y:auto; font-size:.8rem; color:var(--muted);}
+  .log-panel div{padding:4px 0; border-bottom:1px solid rgba(255,255,255,.05);}
+  .top-strip{display:flex; justify-content:space-between; align-items:center; font-size:.8rem; color:var(--muted); margin-bottom:10px; flex-wrap:wrap; gap:8px;}
+  .small-note{font-size:.78rem; color:var(--muted); margin-top:6px;}
+
+  .modal-bg{position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:20px; z-index:50;}
+  .modal{background:var(--felt-2); border:1px solid var(--gold); border-radius:16px; padding:24px; max-width:380px; width:100%; text-align:center;}
+
+  @keyframes sceneIn{from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:translateY(0);}}
+  .scene-in{animation:sceneIn .42s cubic-bezier(.2,.8,.2,1) both;}
+  @media (max-width:420px){ #app{padding:16px 10px 50px;} .seat{padding:10px 8px;} }
+  @media (prefers-reduced-motion:reduce){
+    .scene-in, .deal-in, .seat.turn, .turn-banner.mine, .brand h1{animation:none !important;}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ---------- firebase setup (shared project, separate node) ---------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyCTtj5oJoS8vdEVOGggLRZG1sGqZ0UzaNQ",
+  authDomain: "roy-tam-game.firebaseapp.com",
+  databaseURL: "https://roy-tam-game-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "roy-tam-game",
+  storageBucket: "roy-tam-game.firebasestorage.app",
+  messagingSenderId: "552146451521",
+  appId: "1:552146451521:web:f456db03cf8096279e1ac0",
+  measurementId: "G-327FMZQBZ4"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+/* ---------- constants ---------- */
+const SUITS = ['♠','♥','♦','♣'];
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+const AVATAR_OPTIONS = ['🦁','🐯','🐼','🦊','🐵','🐧','🦄','🐸'];
+const TURN_LIMIT_MS = 20000;
+const STARTING_CHIPS = 500;
+const MIN_BET = 10;
+const BET_PRESETS = [10,25,50,100,250];
+
+function uid(){ return 'p_' + Math.random().toString(36).slice(2,10); }
+function esc(s){ return (s||'').replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+function roomCodeGen(){
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let c=''; for(let i=0;i<5;i++) c+=chars[Math.floor(Math.random()*chars.length)];
+  return c;
+}
+function isRed(suit){ return suit==='♥'||suit==='♦'; }
+function shuffle(arr){
+  for(let i=arr.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
+  return arr;
+}
+// 4-deck shoe — enough that reshuffles (and any card-counting angle) barely matter for casual play
+function freshShoe(){
+  const shoe=[];
+  for(let d=0; d<4; d++){
+    for(const s of SUITS) for(const r of RANKS) shoe.push({rank:r, suit:s, id:uid()});
+  }
+  return shuffle(shoe);
+}
+function ensureShoe(room){
+  if(!room.deck || room.deck.length<15){
+    room.deck = freshShoe();
+    room.log.unshift('🔀 สับไพ่ชุดใหม่');
+  }
+}
+function drawCard(room){ ensureShoe(room); return room.deck.pop(); }
+
+// best total with aces flexible between 1/11; `soft` = still has an ace counted as 11
+function handTotal(hand){
+  let total=0, aces=0;
+  for(const c of hand){
+    if(c.rank==='A'){ aces++; total+=11; }
+    else if(c.rank==='J'||c.rank==='Q'||c.rank==='K') total+=10;
+    else total+=Number(c.rank);
+  }
+  let soft = aces;
+  while(total>21 && soft>0){ total-=10; soft--; }
+  return { total, soft: soft>0 && total<=21 };
+}
+function isBlackjack(hand){ return hand.length===2 && handTotal(hand).total===21; }
+
+/* ---------- session persistence ---------- */
+const SESSION_KEY = 'bjSession_v1';
+const SESSION_MAX_AGE_MS = 6*60*60*1000;
+function saveSession(){
+  try{ localStorage.setItem(SESSION_KEY, JSON.stringify({roomCode:S.roomCode, myId:S.myId, myName:S.myName, myAvatar:S.myAvatar, ts:Date.now()})); }catch(e){}
+}
+function clearSession(){ try{ localStorage.removeItem(SESSION_KEY); }catch(e){} }
+function loadSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_KEY);
+    if(!raw) return null;
+    const data = JSON.parse(raw);
+    if(!data || !data.roomCode || !data.myId) return null;
+    if(Date.now() - (data.ts||0) > SESSION_MAX_AGE_MS) return null;
+    return data;
+  }catch(e){ return null; }
+}
+
+/* ---------- storage helpers ---------- */
+function normalizeRoom(r){
+  if(!r) return r;
+  r.players = r.players || [];
+  r.players.forEach(p=>{
+    p.hand = p.hand || [];
+    if(typeof p.chips!=='number') p.chips = STARTING_CHIPS;
+    if(typeof p.bet!=='number') p.bet = 0;
+    if(!p.status) p.status = 'waiting';
+    if(typeof p.lastDelta!=='number') p.lastDelta = 0;
+    if(typeof p.doubled!=='boolean') p.doubled = false;
+    if(!p.result) p.result = null;
+  });
+  r.dealer = (r.dealer && typeof r.dealer==='object') ? r.dealer : {hand:[], revealed:false};
+  r.dealer.hand = r.dealer.hand || [];
+  r.deck = r.deck || [];
+  r.order = r.order || [];
+  r.log = r.log || [];
+  if(typeof r.currentIndex!=='number') r.currentIndex = 0;
+  if(!r.status) r.status = 'lobby';
+  if(typeof r.round!=='number') r.round = 0;
+  if(typeof r.turnTimeLimit!=='number') r.turnTimeLimit = TURN_LIMIT_MS;
+  if(typeof r.turnStartedAt!=='number') r.turnStartedAt = 0;
+  return r;
+}
+async function loadRoom(code){
+  try{
+    const snap = await db.ref('bjrooms/'+code).once('value');
+    if(!snap.exists()) return null;
+    return normalizeRoom(snap.val());
+  }catch(e){ return null; }
+}
+
+// Race-safe read-modify-write (see index.html for the full rationale) —
+// concurrent hit/stand/bet actions from different players resolve safely
+// instead of one silently clobbering another. `mutator` may return `false`
+// to abort with no write, or the string 'DELETE' to remove the room entirely.
+async function txRoom(code, mutator){
+  try{
+    const result = await db.ref('bjrooms/'+code).transaction(raw=>{
+      if(raw===null || raw===undefined) return raw;
+      const room = normalizeRoom(raw);
+      const outcome = mutator(room);
+      if(outcome===false) return;
+      if(outcome==='DELETE') return null;
+      return room;
+    });
+    const room = result.snapshot.exists() ? normalizeRoom(result.snapshot.val()) : null;
+    return { committed: result.committed, room };
+  }catch(e){
+    console.error('transaction failed', e);
+    return { committed:false, room:null };
+  }
+}
+
+/* ---------- presence (see index.html for rationale) ---------- */
+let presenceConnRef = null;
+function trackPresence(code){
+  untrackPresence();
+  const myRef = db.ref(`bjpresence/${code}/${S.myId}`);
+  presenceConnRef = db.ref('.info/connected');
+  presenceConnRef.on('value', snap=>{
+    if(snap.val()===true){
+      myRef.onDisconnect().remove();
+      myRef.set(true);
+    }
+  });
+  S._presenceRef = myRef;
+}
+function untrackPresence(){
+  if(presenceConnRef){ presenceConnRef.off(); presenceConnRef=null; }
+  if(S._presenceRef){ S._presenceRef.onDisconnect().cancel(); S._presenceRef.remove(); S._presenceRef=null; }
+}
+
+async function fetchPublicRooms(){
+  try{
+    const [roomsSnap, presenceSnap] = await Promise.all([
+      db.ref('bjrooms').orderByChild('status').equalTo('lobby').limitToLast(20).once('value'),
+      db.ref('bjpresence').once('value')
+    ]);
+    const presence = presenceSnap.val() || {};
+    const rooms = [];
+    roomsSnap.forEach(child=>{
+      const r = child.val();
+      const code = r.code || child.key;
+      const onlineCount = presence[code] ? Object.keys(presence[code]).length : 0;
+      if(r && Array.isArray(r.players) && r.players.length>0 && r.players.length<6 && onlineCount>0){
+        const host = r.players.find(p=>p.id===r.hostId) || r.players[0];
+        rooms.push({code, hostName: host.name||'?', count:r.players.length});
+      }
+    });
+    rooms.reverse();
+    return rooms;
+  }catch(e){ return 'error'; }
+}
+
+/* ---------- sound effects (synthesized, no audio files) ---------- */
+let actx = null;
+function getActx(){
+  if(!actx){ const Ctx = window.AudioContext||window.webkitAudioContext; if(!Ctx) return null; actx = new Ctx(); }
+  if(actx.state==='suspended') actx.resume();
+  return actx;
+}
+document.addEventListener('click', ()=>{ getActx(); }, {once:true});
+function beep(freq, dur=0.12, type='sine', delay=0, vol=0.16){
+  const ctx = getActx(); if(!ctx) return;
+  try{
+    const t0 = ctx.currentTime + delay;
+    const osc = ctx.createOscillator(); const gain = ctx.createGain();
+    osc.type = type; osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0, t0); gain.gain.linearRampToValueAtTime(vol, t0+0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(t0); osc.stop(t0+dur+0.03);
+  }catch(e){}
+}
+function sfx(name){
+  if(!S.soundOn) return;
+  if(name==='deal'){ beep(420,.05,'square'); beep(420,.05,'square',.08); }
+  else if(name==='hit'){ beep(500,.06,'square'); }
+  else if(name==='bust'){ beep(260,.22,'sawtooth',0,.14); }
+  else if(name==='blackjack'){ beep(660,.1); beep(880,.12,'sine',.08); beep(1100,.14,'sine',.16); }
+  else if(name==='win'){ beep(520,.09); beep(700,.11,'sine',.08); }
+  else if(name==='lose'){ beep(320,.14,'triangle'); beep(240,.16,'triangle',.1); }
+  else if(name==='push'){ beep(440,.1,'triangle'); }
+  else if(name==='chip'){ beep(700,.05,'square',0,.1); }
+}
+
+/* ---------- app state ---------- */
+const S = {
+  screen:'landing', // landing | lobby | betting | playing | roundend
+  myId: uid(), myName:'', myAvatar: AVATAR_OPTIONS[0],
+  roomCode:'', room:null,
+  pollTimer:null, roomsPollTimer:null,
+  showJoinBox:false, publicRooms:undefined,
+  showRules:false, soundOn:true,
+  betAmount: MIN_BET,
+  err:'',
+  _lastScreen:null,
+  _presenceRef:null
+};
+let sceneAnim = '';
+const app = document.getElementById('app');
+
+/* ---------- real-time listener ---------- */
+function startPolling(){
+  stopPolling();
+  trackPresence(S.roomCode);
+  db.ref('bjrooms/'+S.roomCode).on('value', snap=>{
+    if(!snap.exists()) return;
+    const fresh = normalizeRoom(snap.val());
+    S.room = fresh;
+    if(fresh.status==='lobby') S.screen='lobby';
+    else if(fresh.status==='betting') S.screen='betting';
+    else if(fresh.status==='playing') S.screen='playing';
+    else if(fresh.status==='roundend') S.screen='roundend';
+    render();
+  });
+  // local 1s tick: advance the timer bar + trigger auto-stand on timeout,
+  // without a full re-render (keeps animations from restarting/flickering)
+  S.pollTimer = setInterval(()=>{
+    if(S.room && S.room.status==='playing'){
+      autoPlayCheck();
+      updateTimerBar();
+    }
+  }, 1000);
+}
+function stopPolling(){
+  if(S.pollTimer){ clearInterval(S.pollTimer); S.pollTimer=null; }
+  if(S.roomCode){ db.ref('bjrooms/'+S.roomCode).off(); }
+  untrackPresence();
+}
+function updateTimerBar(){
+  const el = document.getElementById('turnTimerFill');
+  if(!el || !S.room) return;
+  const pct = Math.max(0, 100 - ((Date.now()-S.room.turnStartedAt)/S.room.turnTimeLimit)*100);
+  el.style.width = pct+'%';
+}
+
+/* ---------- room actions ---------- */
+async function createRoom(){
+  if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
+  const code = roomCodeGen();
+  const me = {id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, chips:STARTING_CHIPS, bet:0, hand:[], status:'waiting', result:null, lastDelta:0, doubled:false};
+  const room = {
+    code, hostId:S.myId, status:'lobby',
+    players:[me], dealer:{hand:[], revealed:false},
+    deck:[], order:[], currentIndex:0, turnStartedAt:0, turnTimeLimit:TURN_LIMIT_MS,
+    round:0, log:[`${me.name} สร้างโต๊ะ`], createdAt:Date.now()
+  };
+  try{
+    await db.ref('bjrooms/'+code).set(room);
+  }catch(e){ S.err='สร้างโต๊ะไม่สำเร็จ ลองใหม่'; render(); return; }
+  S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
+  saveSession(); startPolling(); render();
+}
+
+async function joinRoom(codeInput){
+  const code = codeInput.trim().toUpperCase();
+  if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
+  if(!code){ S.err='ใส่รหัสโต๊ะก่อนนะ'; render(); return; }
+  let joinError=''; let alreadySeated=false;
+  const {committed, room} = await txRoom(code, r=>{
+    if(r.players.some(p=>p.id===S.myId)){ alreadySeated=true; return false; }
+    if(r.players.length>=6){ joinError='โต๊ะเต็มแล้ว (สูงสุด 6 คน)'; return false; }
+    if(r.players.some(p=>p.name===S.myName.trim())){ joinError='มีชื่อนี้ที่โต๊ะแล้ว ใช้ชื่ออื่น'; return false; }
+    r.players.push({id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, chips:STARTING_CHIPS, bet:0, hand:[], status:'waiting', result:null, lastDelta:0, doubled:false});
+    r.log.unshift(`${S.myName.trim()} เข้าร่วมโต๊ะ`);
+  });
+  if(!room){ S.err='ไม่พบโต๊ะนี้ เช็กรหัสอีกครั้ง'; render(); return; }
+  if(!committed && !alreadySeated){ S.err = joinError || 'เข้าร่วมไม่สำเร็จ ลองใหม่'; render(); return; }
+  S.roomCode = code; S.room = room; S.err='';
+  S.screen = room.status==='lobby' ? 'lobby' : room.status==='betting' ? 'betting' : room.status==='playing' ? 'playing' : 'roundend';
+  saveSession(); startPolling(); render();
+}
+
+function leaveRoom(){
+  const code = S.roomCode, myId = S.myId;
+  stopPolling(); clearSession();
+  S.roomCode=''; S.room=null; S.screen='landing'; render();
+  if(!code) return;
+  txRoom(code, r=>{
+    if(r.status==='playing') return false; // don't disturb an active hand — the turn timer covers an abandoned turn
+    const meP = r.players.find(p=>p.id===myId);
+    const myName = meP ? meP.name : 'ผู้เล่น';
+    r.players = r.players.filter(p=>p.id!==myId);
+    if(r.players.length===0) return 'DELETE';
+    if(r.hostId===myId){ r.hostId=r.players[0].id; r.log.unshift(`👑 ${r.players[0].name} เป็นเจ้าของโต๊ะคนใหม่`); }
+    r.log.unshift(`${myName} ออกจากโต๊ะ`);
+  }).catch(()=>{});
+}
+
+async function startRound(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.hostId!==S.myId) return false;
+    if(r.status!=='lobby' && r.status!=='roundend') return false;
+    r.players.forEach(p=>{
+      p.hand=[]; p.bet=0; p.result=null; p.lastDelta=0; p.doubled=false;
+      p.status = p.chips>0 ? 'betting' : 'bankrupt';
+    });
+    r.dealer = {hand:[], revealed:false};
+    r.order=[]; r.currentIndex=0;
+    r.round = (r.round||0)+1;
+    r.status='betting';
+    r.log.unshift(`— รอบที่ ${r.round} —`);
+  });
+  if(room){ S.room=room; S.betAmount=Math.min(MIN_BET*2, room.players.find(p=>p.id===S.myId)?.chips||MIN_BET); render(); }
+}
+
+function dealRound(r){
+  ensureShoe(r);
+  const active = r.players.filter(p=>p.status==='ready');
+  active.forEach(p=>{ p.hand=[drawCard(r), drawCard(r)]; });
+  r.dealer.hand = [drawCard(r), drawCard(r)];
+  r.dealer.revealed = false;
+  active.forEach(p=>{ p.status = isBlackjack(p.hand) ? 'blackjack' : 'playing'; });
+  r.order = active.filter(p=>p.status==='playing').map(p=>p.id);
+  r.currentIndex = 0;
+  r.log.unshift('🃏 แจกไพ่แล้ว');
+  if(r.order.length===0){ settleRound(r); }
+  else{ r.status='playing'; r.turnStartedAt=Date.now(); }
+}
+
+function settleRound(r){
+  r.dealer.revealed = true;
+  const dealerBJ = isBlackjack(r.dealer.hand);
+  const anyoneToBeat = r.players.some(p=>p.status==='stand' || p.status==='blackjack');
+  if(anyoneToBeat){
+    let dt = handTotal(r.dealer.hand).total;
+    while(dt < 17){ r.dealer.hand.push(drawCard(r)); dt = handTotal(r.dealer.hand).total; }
+  }
+  const dealerTotal = handTotal(r.dealer.hand).total;
+  const dealerBust = dealerTotal > 21;
+  r.players.forEach(p=>{
+    if(p.status==='bankrupt' || p.status==='waiting') return;
+    let delta=0, result;
+    if(p.status==='bust'){ result='lose'; delta=-p.bet; }
+    else if(p.status==='blackjack'){
+      if(dealerBJ){ result='push'; delta=0; }
+      else { result='blackjack'; delta=Math.floor(p.bet*1.5); }
+    } else if(p.status==='stand'){
+      const pt = handTotal(p.hand).total;
+      if(dealerBust || pt>dealerTotal){ result='win'; delta=p.bet; }
+      else if(pt<dealerTotal){ result='lose'; delta=-p.bet; }
+      else { result='push'; delta=0; }
+    } else return;
+    p.chips += delta; p.lastDelta = delta; p.result = result;
+  });
+  r.status='roundend';
+  r.log.unshift('🎲 เปิดไพ่เจ้ามือ — จบรอบ');
+}
+
+function advanceTurn(r){
+  r.currentIndex++;
+  if(r.currentIndex >= r.order.length) settleRound(r);
+  else r.turnStartedAt = Date.now();
+}
+
+async function placeBet(amount){
+  amount = Math.floor(amount);
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='betting') return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || me.status!=='betting') return false;
+    if(amount < MIN_BET || amount > me.chips) return false;
+    me.bet = amount; me.status='ready';
+    r.log.unshift(`${me.name} วางเดิมพัน ${amount} ชิป`);
+    if(!r.players.some(p=>p.status==='betting')) dealRound(r);
+  });
+  if(room){ S.room=room; sfx('deal'); render(); }
+}
+
+async function hit(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing' || r.order[r.currentIndex]!==S.myId) return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || me.status!=='playing') return false;
+    me.hand.push(drawCard(r));
+    const t = handTotal(me.hand).total;
+    if(t>21){ me.status='bust'; advanceTurn(r); }
+    else if(t===21){ me.status='stand'; advanceTurn(r); }
+  });
+  if(room){
+    const me = room.players.find(p=>p.id===S.myId);
+    sfx(me && me.status==='bust' ? 'bust' : 'hit');
+    S.room=room; render();
+  }
+}
+async function stand(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing' || r.order[r.currentIndex]!==S.myId) return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || me.status!=='playing') return false;
+    me.status='stand';
+    advanceTurn(r);
+  });
+  if(room){ S.room=room; render(); }
+}
+async function doubleDown(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing' || r.order[r.currentIndex]!==S.myId) return false;
+    const me = r.players.find(p=>p.id===S.myId);
+    if(!me || me.status!=='playing' || me.hand.length!==2 || me.chips < me.bet*2) return false;
+    me.bet *= 2; me.doubled = true;
+    me.hand.push(drawCard(r));
+    const t = handTotal(me.hand).total;
+    me.status = t>21 ? 'bust' : 'stand';
+    advanceTurn(r);
+  });
+  if(room){
+    const me = room.players.find(p=>p.id===S.myId);
+    sfx(me && me.status==='bust' ? 'bust' : 'hit');
+    S.room=room; render();
+  }
+}
+async function autoPlayCheck(){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.status!=='playing') return false;
+    if(Date.now()-r.turnStartedAt < r.turnTimeLimit) return false;
+    const curId = r.order[r.currentIndex];
+    const me = r.players.find(p=>p.id===curId);
+    if(!me || me.status!=='playing') return false;
+    me.status='stand';
+    r.log.unshift(`⏱ หมดเวลา — ${me.name} หมอบอัตโนมัติ`);
+    advanceTurn(r);
+  });
+  if(room){ S.room=room; render(); }
+}
+
+/* ---------- public rooms list (silent auto-refresh, no flicker) ---------- */
+async function loadPublicRooms(){
+  S.publicRooms='loading'; render();
+  const result = await fetchPublicRooms();
+  S.publicRooms=result; render();
+  startRoomsPolling();
+}
+function startRoomsPolling(){ stopRoomsPolling(); S.roomsPollTimer=setInterval(silentRefreshPublicRooms, 1000); }
+function stopRoomsPolling(){ if(S.roomsPollTimer){ clearInterval(S.roomsPollTimer); S.roomsPollTimer=null; } }
+async function silentRefreshPublicRooms(){
+  if(S.screen!=='landing' || !S.showJoinBox || !document.getElementById('publicRoomsList')){ stopRoomsPolling(); return; }
+  const result = await fetchPublicRooms();
+  if(JSON.stringify(result)===JSON.stringify(S.publicRooms)) return;
+  S.publicRooms = result;
+  const target = document.getElementById('publicRoomsList');
+  if(!target) return;
+  target.innerHTML = publicRoomsListHtml();
+  wirePublicRoomsHandlers();
+}
+function publicRoomsListHtml(){
+  return S.publicRooms===undefined || S.publicRooms==='loading' ? `
+      <div style="display:flex; align-items:center; gap:10px; color:var(--muted); padding:8px 0;">
+        <span class="spinner" style="width:18px; height:18px; border-width:2px;"></span>
+        <span style="font-size:.85rem;">กำลังค้นหาโต๊ะ...</span>
+      </div>`
+    : S.publicRooms==='error' ? `
+      <p class="small-note" style="margin-top:0;">โหลดรายชื่อโต๊ะไม่ได้ (เช็ก Firebase rules สำหรับ bjrooms/bjpresence) — ใส่รหัสโต๊ะด้วยตัวเองแทนได้</p>`
+    : S.publicRooms.length===0 ? `
+      <p class="small-note" style="margin-top:0;">ยังไม่มีโต๊ะเปิดอยู่ ลองสร้างโต๊ะใหม่ดูสิ</p>`
+    : S.publicRooms.map(r=>`
+      <button class="public-room-row" data-code="${r.code}">
+        <span class="room-code-chip">${r.code}</span>
+        <span class="public-room-info">
+          <span class="public-room-host">${esc(r.hostName)}</span>
+          <span class="small-note" style="margin:0;">${r.count}/6 คน</span>
+        </span>
+        <span class="public-room-go">เข้าร่วม →</span>
+      </button>`).join('');
+}
+function wirePublicRoomsHandlers(){
+  const refreshBtn = document.getElementById('btnRefreshRooms');
+  if(refreshBtn) refreshBtn.onclick = ()=> loadPublicRooms();
+  document.querySelectorAll('.public-room-row').forEach(row=>{
+    row.onclick = ()=>{
+      row.disabled = true;
+      row.querySelector('.public-room-go').textContent = 'กำลังเข้าร่วม...';
+      stopRoomsPolling();
+      joinRoom(row.dataset.code);
+    };
+  });
+}
+
+/* ---------- shared UI bits ---------- */
+function gameSwitcherHtml(){
+  return `
+    <div class="game-switcher">
+      <a href="index.html" class="game-switch-btn"><span class="icon">🂠</span><span>ร้อยแต้ม</span></a>
+      <a href="blackjack.html" class="game-switch-btn active"><span class="icon">🂡</span><span>Blackjack</span></a>
+      <span class="game-switch-btn disabled"><span class="icon">🃏</span><span>โป๊กเกอร์</span><i>เร็วๆนี้</i></span>
+    </div>`;
+}
+function cardEl(card, small){
+  return `<div class="card ${isRed(card.suit)?'red':''} ${small?'small':''} deal-in"><div>${card.rank}</div><div class="mid">${card.suit}</div><div style="align-self:flex-end; transform:rotate(180deg)">${card.rank}</div></div>`;
+}
+function backCardEl(small){ return `<div class="card back ${small?'small':''} deal-in"></div>`; }
+function rulesModalHtml(){
+  return `
+    <div class="modal-bg">
+      <div class="modal" style="max-width:420px; text-align:left;">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px; text-align:center;">กติกา Blackjack (21 แต้ม)</h3>
+        <div style="font-size:.86rem; line-height:1.6;">
+          <p>เป้าหมาย: ทำแต้มไพ่ในมือให้ <b>ใกล้ 21 ที่สุดโดยไม่เกิน</b> เพื่อชนะเจ้ามือ (AI)</p>
+          <ul style="margin:8px 0; padding-left:18px;">
+            <li>2–10 = แต้มตามหน้าไพ่ / J,Q,K = 10 แต้ม / A = 1 หรือ 11 (เลือกให้ดีที่สุดอัตโนมัติ)</li>
+            <li>ไพ่ 2 ใบแรกรวมได้ 21 พอดี = <b>Blackjack</b> จ่าย 3:2</li>
+            <li>เกิน 21 = <b>Bust</b> แพ้ทันที ไม่ต้องรอเจ้ามือ</li>
+            <li><b>Hit</b> จั่วเพิ่ม / <b>Stand</b> หยุดที่แต้มปัจจุบัน</li>
+            <li><b>Double Down</b> ได้เฉพาะตอนมีไพ่ 2 ใบแรก: เพิ่มเดิมพันเป็น 2 เท่า แล้วจั่วอีกแค่ 1 ใบ บังคับหยุด</li>
+            <li>เจ้ามือจั่วจนกว่าจะได้ 17 แต้มขึ้นไปเสมอ (หยุดที่ 17 ทุกกรณี ไม่มีเว้น)</li>
+            <li>เจ้ามือ Bust = ทุกคนที่เหลือชนะ / เสมอแต้ม = ได้เงินเดิมพันคืน (Push)</li>
+          </ul>
+          <p class="small-note" style="margin-top:10px;">หมายเหตุ: เวอร์ชันนี้ยังไม่รองรับ Split (แยกไพ่คู่) และ Insurance — จะเพิ่มทีหลังถ้าต้องการ</p>
+        </div>
+        <button class="btn btn-gold" id="btnCloseRules" style="margin-top:12px;">เข้าใจแล้ว</button>
+      </div>
+    </div>`;
+}
+function statusBadge(status){
+  const map = {
+    playing:['กำลังเล่น','badge-playing'], stand:['หยุด','badge-stand'], bust:['แตก!','badge-bust'],
+    blackjack:['Blackjack!','badge-blackjack'], betting:['กำลังวางเดิมพัน','badge-waiting'],
+    ready:['พร้อมแล้ว','badge-waiting'], waiting:['รอรอบถัดไป','badge-waiting'], bankrupt:['ชิปหมด','badge-bust']
+  };
+  const [t,c] = map[status] || ['','badge-waiting'];
+  return `<span class="status-badge ${c}">${t}</span>`;
+}
+function resultBadge(result){
+  const map = { win:['ชนะ 🎉','badge-win'], blackjack:['Blackjack! 🎉','badge-blackjack'], lose:['แพ้','badge-lose'], push:['เสมอ','badge-push'] };
+  const [t,c] = map[result] || ['',''];
+  return c ? `<span class="status-badge ${c}">${t}</span>` : '';
+}
+
+/* ---------- rendering ---------- */
+function render(){
+  const changed = S._lastScreen !== S.screen;
+  sceneAnim = changed ? 'scene-in' : '';
+  S._lastScreen = S.screen;
+  if(S.screen==='landing') renderLanding();
+  else if(S.screen==='lobby') renderLobby();
+  else if(S.screen==='betting') renderBetting();
+  else if(S.screen==='playing') renderPlaying();
+  else if(S.screen==='roundend') renderRoundEnd();
+}
+
+function renderLanding(){
+  app.innerHTML = `
+    <div class="${sceneAnim}">
+      ${gameSwitcherHtml()}
+      <div class="brand"><h1>♠ Blackjack ♠</h1><div class="sub">เล่นกับเจ้ามือ AI แบบหลายคนพร้อมกัน</div></div>
+      <div class="panel">
+        <label>ชื่อผู้เล่น</label>
+        <input type="text" id="nameInput" placeholder="ใส่ชื่อของคุณ" value="${esc(S.myName)}" maxlength="16">
+        <div class="avatar-picker">
+          ${AVATAR_OPTIONS.map(a=>`<button class="avatar-opt ${a===S.myAvatar?'active':''}" data-avatar="${a}">${a}</button>`).join('')}
+        </div>
+        ${S.err?`<p class="small-note" style="color:#ffb3ac;">${esc(S.err)}</p>`:''}
+        <div class="btn-row">
+          <button class="btn btn-gold" id="btnCreate" style="flex:1;">🪑 สร้างโต๊ะใหม่</button>
+          <button class="btn btn-ghost" id="btnJoin" style="flex:1;">🔑 เข้าร่วมโต๊ะ</button>
+        </div>
+        <div id="joinBox" style="${S.showJoinBox?'':'display:none;'} margin-top:14px;">
+          <label>รหัสโต๊ะ</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="codeInput" placeholder="เช่น A1B2C" maxlength="6" style="text-transform:uppercase;">
+            <button class="btn btn-gold" id="btnDoJoin">เข้าร่วม</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <h3 style="color:var(--gold-soft); margin:0;">🌐 โต๊ะที่เปิดอยู่</h3>
+          <button class="btn btn-ghost" id="btnRefreshRooms" style="padding:4px 10px; font-size:.72rem;">🔄 รีเฟรช</button>
+        </div>
+        <div id="publicRoomsList">${publicRoomsListHtml()}</div>
+      </div>
+    </div>
+  `;
+  document.getElementById('nameInput').oninput = e=>{ S.myName = e.target.value; };
+  document.querySelectorAll('.avatar-opt').forEach(btn=>{
+    btn.onclick = ()=>{ S.myAvatar = btn.dataset.avatar; render(); };
+  });
+  document.getElementById('btnCreate').onclick = createRoom;
+  document.getElementById('btnJoin').onclick = ()=>{
+    if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
+    S.showJoinBox = true; render();
+    document.getElementById('codeInput')?.focus();
+    if(S.publicRooms===undefined) loadPublicRooms(); else startRoomsPolling();
+  };
+  document.getElementById('btnDoJoin')?.addEventListener('click', (e)=>{
+    const v = document.getElementById('codeInput').value;
+    const btn = e.currentTarget;
+    btn.disabled = true; btn.textContent = 'กำลังเข้าร่วม...';
+    stopRoomsPolling();
+    joinRoom(v);
+  });
+  wirePublicRoomsHandlers();
+}
+
+function renderLobby(){
+  const room = S.room;
+  const isHost = room.hostId === S.myId;
+  app.innerHTML = `
+    <div class="${sceneAnim}">
+      <div class="brand"><h1>Blackjack</h1><div class="sub">โต๊ะรอผู้เล่น</div></div>
+      <div class="btn-row" style="justify-content:center; margin-bottom:6px;">
+        <button class="btn btn-ghost" id="btnRulesLobby" style="padding:5px 14px; font-size:.78rem;">📖 ดูกติกา</button>
+      </div>
+      <div class="panel">
+        <label>รหัสโต๊ะ (ส่งให้เพื่อน)</label>
+        <div class="room-code-row">
+          <div class="room-code">${room.code}</div>
+          <button class="btn btn-ghost copy-code-btn" id="btnCopyCode">คัดลอก</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px;">ผู้เล่นที่โต๊ะ (${room.players.length}/6)</h3>
+        ${room.players.map(p=>`
+          <div class="player-row">
+            <div class="avatar">${p.avatar}</div>
+            <span class="player-name">${esc(p.name)}</span>
+            ${p.id===room.hostId?'<span class="tag">เจ้าของโต๊ะ</span>':''}
+            <span class="chip-cnt" style="margin-left:auto;">🪙 ${p.chips}</span>
+          </div>`).join('')}
+        <p class="small-note">ทุกคนเริ่มด้วยชิป ${STARTING_CHIPS} · เดิมพันขั้นต่ำ ${MIN_BET}</p>
+      </div>
+      ${isHost ? `
+      <div class="btn-row">
+        <button class="btn btn-gold" id="btnStart" style="flex:1;">🎲 เริ่มเกม</button>
+      </div>` : `<p class="small-note" style="text-align:center; margin-top:14px;">รอเจ้าของโต๊ะกดเริ่มเกม...</p>`}
+      <div class="btn-row">
+        <button class="btn btn-danger" id="btnLeave" style="flex:1;">ออกจากโต๊ะ</button>
+      </div>
+      ${S.showRules ? rulesModalHtml() : ''}
+    </div>
+  `;
+  if(isHost) document.getElementById('btnStart').onclick = startRound;
+  document.getElementById('btnLeave').onclick = leaveRoom;
+  document.getElementById('btnCopyCode').onclick = (e)=>{
+    navigator.clipboard?.writeText(room.code);
+    e.currentTarget.textContent='คัดลอกแล้ว!'; e.currentTarget.classList.add('copied');
+    setTimeout(()=>{ e.currentTarget.textContent='คัดลอก'; e.currentTarget.classList.remove('copied'); }, 1500);
+  };
+  document.getElementById('btnRulesLobby').onclick = ()=>{ S.showRules=true; render(); };
+  if(S.showRules) document.getElementById('btnCloseRules').onclick = ()=>{ S.showRules=false; render(); };
+}
+
+function renderBetting(){
+  const room = S.room;
+  const me = room.players.find(p=>p.id===S.myId);
+  const maxBet = me ? me.chips : 0;
+  if(S.betAmount > maxBet) S.betAmount = Math.min(MIN_BET, maxBet);
+  app.innerHTML = `
+    <div class="${sceneAnim}">
+      <div class="top-strip">
+        <span>โต๊ะ ${room.code} · รอบที่ ${room.round}</span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <button id="btnSound" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">${S.soundOn?'🔊':'🔇'}</button>
+          <button id="btnRules" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">กติกา</button>
+        </span>
+      </div>
+      <div class="panel" style="text-align:center;">
+        ${me && me.status==='bankrupt' ? `
+          <h3 style="color:var(--gold-soft);">ชิปของคุณหมดแล้ว 😢</h3>
+          <p class="small-note">รอดูเพื่อนเล่นไปก่อน หรือออกจากโต๊ะแล้วสร้าง/เข้าร่วมโต๊ะใหม่เพื่อเริ่มชิปใหม่</p>
+        ` : me && me.status==='ready' ? `
+          <h3 style="color:var(--gold-soft);">วางเดิมพัน ${me.bet} ชิปแล้ว ✅</h3>
+          <p class="small-note">รอผู้เล่นคนอื่นวางเดิมพัน...</p>
+        ` : `
+          <h3 style="color:var(--gold-soft); margin-bottom:6px;">วางเดิมพันของคุณ</h3>
+          <p class="small-note" style="margin-bottom:10px;">มีชิป 🪙 ${maxBet}</p>
+          <div class="bet-display" id="betDisplay">${S.betAmount}</div>
+          <div class="chip-row">
+            ${BET_PRESETS.map(v=>`<button class="chip-btn" data-add="${v}" ${v>maxBet?'disabled style="opacity:.35"':''}>+${v}</button>`).join('')}
+          </div>
+          <div class="btn-row" style="justify-content:center;">
+            <button class="btn btn-ghost" id="btnClearBet">ล้าง</button>
+            <button class="btn btn-ghost" id="btnAllIn">All-in (${maxBet})</button>
+            <button class="btn btn-gold" id="btnConfirmBet" ${S.betAmount<MIN_BET||S.betAmount>maxBet?'disabled':''}>ยืนยันเดิมพัน</button>
+          </div>
+        `}
+      </div>
+      <div class="panel">
+        <h3 style="color:var(--gold-soft); margin-bottom:8px; font-size:1rem;">สถานะผู้เล่น</h3>
+        ${room.players.map(p=>`
+          <div class="player-row">
+            <div class="avatar">${p.avatar}</div>
+            <span class="player-name">${esc(p.name)}</span>
+            <span class="chip-cnt">🪙 ${p.chips}</span>
+            <span style="margin-left:auto;">${statusBadge(p.status)}</span>
+          </div>`).join('')}
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-danger" id="btnLeave" style="flex:1;">ออกจากโต๊ะ</button>
+      </div>
+      ${S.showRules ? rulesModalHtml() : ''}
+    </div>
+  `;
+  document.querySelectorAll('.chip-btn').forEach(btn=>{
+    btn.onclick = ()=>{
+      if(btn.disabled) return;
+      sfx('chip');
+      S.betAmount = Math.min(maxBet, S.betAmount + Number(btn.dataset.add));
+      render();
+    };
+  });
+  document.getElementById('btnClearBet')?.addEventListener('click', ()=>{ S.betAmount=0; render(); });
+  document.getElementById('btnAllIn')?.addEventListener('click', ()=>{ S.betAmount=maxBet; render(); });
+  document.getElementById('btnConfirmBet')?.addEventListener('click', (e)=>{
+    e.currentTarget.disabled = true;
+    placeBet(S.betAmount);
+  });
+  document.getElementById('btnLeave').onclick = leaveRoom;
+  document.getElementById('btnSound').onclick = ()=>{ S.soundOn=!S.soundOn; render(); };
+  document.getElementById('btnRules').onclick = ()=>{ S.showRules=true; render(); };
+  if(S.showRules) document.getElementById('btnCloseRules').onclick = ()=>{ S.showRules=false; render(); };
+}
+
+function renderPlaying(){
+  const room = S.room;
+  const me = room.players.find(p=>p.id===S.myId);
+  const curId = room.order[room.currentIndex];
+  const isMyTurn = curId === S.myId;
+  const dealerTotal = handTotal(room.dealer.hand).total;
+  const pct = Math.max(0, 100 - ((Date.now()-room.turnStartedAt)/room.turnTimeLimit)*100);
+  const myTotal = me ? handTotal(me.hand).total : 0;
+  const canDouble = isMyTurn && me && me.hand.length===2 && me.chips >= me.bet*2;
+  app.innerHTML = `
+    <div class="${sceneAnim}">
+      <div class="top-strip">
+        <span>โต๊ะ ${room.code} · รอบที่ ${room.round}</span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <button id="btnSound" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">${S.soundOn?'🔊':'🔇'}</button>
+          <button id="btnRules" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">กติกา</button>
+        </span>
+      </div>
+      <div class="dealer-area">
+        <div class="dealer-label">เจ้ามือ</div>
+        <div class="hand-row">
+          ${room.dealer.hand.map((c,i)=> i===1 ? backCardEl(false) : cardEl(c,false)).join('')}
+        </div>
+        <div class="hand-total">${room.dealer.hand.length? '?' : ''}</div>
+      </div>
+      ${curId ? `
+      <div class="turn-banner ${isMyTurn?'mine':''}">
+        ${isMyTurn ? 'ตาของคุณ — Hit หรือ Stand?' : `รอ ${(room.players.find(p=>p.id===curId)||{}).name||'ผู้เล่น'} ตัดสินใจ...`}
+        <div class="timer-bar"><div class="timer-fill" id="turnTimerFill" style="width:${pct}%"></div></div>
+      </div>` : ''}
+      <div class="seats-ring">
+        ${room.players.filter(p=>p.status!=='waiting' && p.status!=='bankrupt').map(p=>{
+          const isTurn = p.id===curId;
+          const total = handTotal(p.hand).total;
+          return `
+          <div class="seat ${isTurn?'turn':''} ${p.status==='bust'?'out':''}">
+            <div class="nm">${p.avatar} ${esc(p.name)}</div>
+            <div class="hand-row">${p.hand.map(c=>cardEl(c,true)).join('')}</div>
+            <div class="hand-total" style="font-size:1rem;">${total}${p.doubled?' (2x)':''}</div>
+            ${statusBadge(p.status)}
+          </div>`;
+        }).join('')}
+      </div>
+      ${isMyTurn ? `
+      <div class="btn-row" style="justify-content:center;">
+        <button class="btn btn-gold" id="btnHit">🃏 Hit</button>
+        <button class="btn btn-ghost" id="btnStand">✋ Stand</button>
+        ${canDouble ? `<button class="btn btn-ghost" id="btnDouble">⏫ Double Down</button>` : ''}
+      </div>` : ''}
+      <div class="log-panel">${room.log.slice(0,8).map(l=>`<div>${esc(l)}</div>`).join('')}</div>
+      ${S.showRules ? rulesModalHtml() : ''}
+    </div>
+  `;
+  if(isMyTurn){
+    document.getElementById('btnHit').onclick = hit;
+    document.getElementById('btnStand').onclick = stand;
+    document.getElementById('btnDouble')?.addEventListener('click', doubleDown);
+  }
+  document.getElementById('btnSound').onclick = ()=>{ S.soundOn=!S.soundOn; render(); };
+  document.getElementById('btnRules').onclick = ()=>{ S.showRules=true; render(); };
+  if(S.showRules) document.getElementById('btnCloseRules').onclick = ()=>{ S.showRules=false; render(); };
+}
+
+function renderRoundEnd(){
+  const room = S.room;
+  const isHost = room.hostId === S.myId;
+  const dealerTotal = handTotal(room.dealer.hand).total;
+  // play one settle sound based on my own result, once per round
+  if(S._lastSettledRound !== room.round){
+    S._lastSettledRound = room.round;
+    const me = room.players.find(p=>p.id===S.myId);
+    if(me && me.result){
+      if(me.result==='blackjack') sfx('blackjack');
+      else if(me.result==='win') sfx('win');
+      else if(me.result==='lose') sfx('lose');
+      else if(me.result==='push') sfx('push');
+    }
+  }
+  app.innerHTML = `
+    <div class="${sceneAnim}">
+      <div class="top-strip">
+        <span>โต๊ะ ${room.code} · จบรอบที่ ${room.round}</span>
+        <span style="display:flex; align-items:center; gap:8px;">
+          <button id="btnSound" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">${S.soundOn?'🔊':'🔇'}</button>
+        </span>
+      </div>
+      <div class="dealer-area">
+        <div class="dealer-label">เจ้ามือ</div>
+        <div class="hand-row">${room.dealer.hand.map(c=>cardEl(c,false)).join('')}</div>
+        <div class="hand-total">${dealerTotal}${dealerTotal>21?' (Bust!)':''}</div>
+      </div>
+      <div class="seats-ring">
+        ${room.players.filter(p=>p.status!=='waiting' && p.status!=='bankrupt').map(p=>{
+          const total = handTotal(p.hand).total;
+          const deltaCls = p.lastDelta>0?'pos':p.lastDelta<0?'neg':'zero';
+          const deltaTxt = p.lastDelta>0? `+${p.lastDelta}` : p.lastDelta;
+          return `
+          <div class="seat">
+            <div class="nm">${p.avatar} ${esc(p.name)}</div>
+            <div class="hand-row">${p.hand.map(c=>cardEl(c,true)).join('')}</div>
+            <div class="hand-total" style="font-size:1rem;">${total}</div>
+            ${resultBadge(p.result)}
+            <div class="delta ${deltaCls}">${deltaTxt} 🪙</div>
+            <div class="chip-cnt" style="margin-top:2px;">รวม ${p.chips}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      ${room.players.some(p=>p.status==='waiting') ? `<p class="small-note" style="text-align:center;">มีผู้เล่นใหม่เข้าร่วม จะได้ลงเล่นในรอบถัดไป</p>` : ''}
+      ${isHost ? `
+      <div class="btn-row">
+        <button class="btn btn-gold" id="btnNextRound" style="flex:1;">🎲 รอบถัดไป</button>
+      </div>` : `<p class="small-note" style="text-align:center; margin-top:14px;">รอเจ้าของโต๊ะเริ่มรอบถัดไป...</p>`}
+      <div class="btn-row">
+        <button class="btn btn-danger" id="btnLeave" style="flex:1;">ออกจากโต๊ะ</button>
+      </div>
+    </div>
+  `;
+  if(isHost) document.getElementById('btnNextRound').onclick = startRound;
+  document.getElementById('btnLeave').onclick = leaveRoom;
+  document.getElementById('btnSound').onclick = ()=>{ S.soundOn=!S.soundOn; render(); };
+}
+
+/* ---------- boot ---------- */
+async function init(){
+  const session = loadSession();
+  if(session){
+    app.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:center; gap:10px; margin-top:40px; color:var(--muted);">
+        <div class="spinner" style="width:20px; height:20px; border-width:2px;"></div>
+        <span>กำลังเชื่อมต่อกลับเข้าโต๊ะ...</span>
+      </div>`;
+    const room = await loadRoom(session.roomCode);
+    const stillIn = room && room.players.some(p=>p.id===session.myId);
+    if(room && stillIn){
+      S.myId = session.myId;
+      S.myName = session.myName || '';
+      S.myAvatar = session.myAvatar || AVATAR_OPTIONS[0];
+      S.roomCode = session.roomCode;
+      S.room = room;
+      S.screen = room.status==='lobby'?'lobby':room.status==='betting'?'betting':room.status==='playing'?'playing':'roundend';
+      saveSession(); startPolling(); render();
+      return;
+    }
+    clearSession();
+  }
+  render();
+}
+init();
+</script>
+</body>
+</html>
