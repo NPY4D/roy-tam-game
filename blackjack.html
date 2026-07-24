@@ -14,7 +14,14 @@
 ต้องเพิ่ม rule 2 บรรทัดนี้ใน Firebase Realtime Database > Rules
 (นอกเหนือจาก rooms/presence ที่มีอยู่แล้ว):
    "bjrooms":   { ".read": true, ".write": true },
-   "bjpresence":{ ".read": true, ".write": true }
+   "bjpresence":{ ".read": true, ".write": true },
+   "bjusers":   { ".read": true, ".write": true }
+
+หมายเหตุความปลอดภัย: ระบบบัญชี/ชิป/ลีดเดอร์บอร์ดด้านล่างนี้ทำงานแบบ
+client-only (ไม่มี backend ของตัวเอง) เก็บรหัสผ่านแบบ hash (SHA-256 + salt)
+ไม่ใช่ plaintext ก็จริง แต่ rule ด้านบนเปิด read/write กว้างเหมือนเดิม แปลว่า
+คนที่เข้าถึง Firebase console/DB ตรงๆ ยังแก้ชิปหรืออ่านข้อมูลได้อยู่ดี —
+เพียงพอสำหรับเล่นกันเองในกลุ่มเพื่อน แต่ไม่ใช่ระบบความปลอดภัยระดับจริงจัง
 =====================================================================
 -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -238,6 +245,15 @@ const TURN_LIMIT_MS = 20000;
 const STARTING_CHIPS = 500;
 const MIN_BET = 10;
 const BET_PRESETS = [10,25,50,100,250];
+const WHEEL_SEGMENTS = [20,50,30,100,20,200,30,50]; // 8 slots around the wheel
+const WHEEL_COOLDOWN_MS = 60*60*1000; // 1 ชั่วโมง
+const SLOT_SYMBOLS = ['♠','♥','♦','♣'];
+const SLOT_COOLDOWN_MS = 5*60*1000; // 5 นาที
+function slotPayout(a,b,c){
+  if(a===b && b===c) return 150;
+  if(a===b || b===c || a===c) return 20;
+  return 0;
+}
 
 function uid(){ return 'p_' + Math.random().toString(36).slice(2,10); }
 function esc(s){ return (s||'').replace(/[<>&]/g, c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
@@ -302,6 +318,233 @@ function loadSession(){
   }catch(e){ return null; }
 }
 
+/* ---------- account / auth (username+password, stored in bjusers) ---------- */
+// SECURITY NOTE: passwords are hashed (SHA-256 + a per-account random salt)
+// before ever touching the database, and chip-granting actions (mini-games,
+// bet caps) all go through Firebase transactions so cooldowns can't be
+// skipped by editing localStorage. That said, bjusers/bjrooms still use the
+// same open read/write rules as the rest of this file (see the note at the
+// top) — a technically determined person could still read the DB directly
+// or push arbitrary values from the browser console. Good enough to stop
+// friends from casually messing with each other's accounts; not a real
+// security boundary. A proper version would need Firebase Auth + Cloud
+// Functions validating writes server-side, which is a separate project.
+const AUTH_SESSION_KEY = 'bjAuthSession_v1';
+
+function usernameToKey(name){
+  // Firebase keys can't contain . # $ [ ] / — keep it simple: letters,
+  // numbers, Thai characters, underscore only, lowercased so "Tom" and
+  // "tom" collide into the same account instead of two.
+  return (name||'').trim().toLowerCase().replace(/[^a-z0-9ก-๙_]/g,'');
+}
+async function sha256Hex(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function randomSalt(){ return Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2); }
+
+function saveAuthSession(){ try{ localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({key:S.account.key})); }catch(e){} }
+function clearAuthSession(){ try{ localStorage.removeItem(AUTH_SESSION_KEY); }catch(e){} }
+function loadAuthSession(){
+  try{
+    const raw = localStorage.getItem(AUTH_SESSION_KEY);
+    if(!raw) return null;
+    const data = JSON.parse(raw);
+    return (data && data.key) ? data : null;
+  }catch(e){ return null; }
+}
+
+// generic race-safe read-modify-write against a single bjusers/{key} record
+// — same idea as txRoom below, used for cooldown-gated chip grants.
+async function txUser(key, mutator){
+  try{
+    const result = await db.ref('bjusers/'+key).transaction(raw=>{
+      if(raw===null || raw===undefined) return raw;
+      const outcome = mutator(raw);
+      if(outcome===false) return;
+      return raw;
+    });
+    return { committed: result.committed, data: result.snapshot.exists() ? result.snapshot.val() : null };
+  }catch(e){ return { committed:false, data:null }; }
+}
+
+async function registerAccount(displayName, password, avatar){
+  const key = usernameToKey(displayName);
+  if(!key){ S.authErr='ตั้งชื่อผู้ใช้เป็นตัวอักษร/ตัวเลขอย่างน้อย 1 ตัว'; render(); return; }
+  if(!password || password.length<4){ S.authErr='รหัสผ่านอย่างน้อย 4 ตัวอักษร'; render(); return; }
+  const salt = randomSalt();
+  const passHash = await sha256Hex(salt+password);
+  const account = {
+    key, displayName: displayName.trim(), avatar: avatar||AVATAR_OPTIONS[0],
+    passHash, salt, chips: STARTING_CHIPS,
+    lastWheelAt:0, lastSlotAt:0, activeRoom:null, createdAt:Date.now()
+  };
+  let result;
+  try{
+    // atomic "create only if this key doesn't exist yet"
+    result = await db.ref('bjusers/'+key).transaction(current => current===null ? account : undefined);
+  }catch(e){ S.authErr='สมัครไม่สำเร็จ ลองใหม่'; render(); return; }
+  if(!result.committed){ S.authErr='ชื่อนี้มีคนใช้แล้ว ลองชื่ออื่น'; render(); return; }
+  onLoginSuccess(account);
+}
+
+async function loginAccount(displayName, password){
+  const key = usernameToKey(displayName);
+  if(!key || !password){ S.authErr='กรอกชื่อผู้ใช้และรหัสผ่านให้ครบ'; render(); return; }
+  let snap;
+  try{ snap = await db.ref('bjusers/'+key).once('value'); }
+  catch(e){ S.authErr='เชื่อมต่อไม่ได้ ลองใหม่'; render(); return; }
+  if(!snap.exists()){ S.authErr='ไม่พบบัญชีนี้ ลองสมัครใหม่แทน'; render(); return; }
+  const account = snap.val();
+  const hash = await sha256Hex((account.salt||'')+password);
+  if(hash !== account.passHash){ S.authErr='รหัสผ่านไม่ถูกต้อง'; render(); return; }
+  onLoginSuccess(account);
+}
+
+function onLoginSuccess(account){
+  S.account = account;
+  S.myId = 'u_'+account.key;
+  S.myName = account.displayName;
+  S.myAvatar = account.avatar || AVATAR_OPTIONS[0];
+  S.authErr=''; S.authPassword='';
+  saveAuthSession();
+  afterAuthReady();
+}
+
+function logoutAccount(){
+  stopPolling(); stopRoomsPolling(); clearSession(); clearAuthSession();
+  S.account=null; S.myId=null; S.myName=''; S.myAvatar=AVATAR_OPTIONS[0];
+  S.roomCode=''; S.room=null; S.leaderboard=undefined;
+  S.wheelResult=null; S.slotResult=null; S.spinningWheel=false; S.spinningSlot=false;
+  S.authMode='login'; S.authName=''; S.authPassword=''; S.authErr='';
+  S.screen='auth'; render();
+}
+
+// pulls the account's whole balance into a table seat, and marks the
+// account as "seated" there. Zeroing the wallet the moment chips leave it
+// (plus the activeRoom flag) is what stops the same account from double-
+// spending its balance across two tables at once, e.g. from two tabs.
+async function withdrawAllChipsForTable(code){
+  const amount = S.account.chips||0;
+  try{ await db.ref('bjusers/'+S.account.key).update({chips:0, activeRoom:code}); }catch(e){}
+  S.account.chips = 0; S.account.activeRoom = code;
+  return amount;
+}
+// syncs the wallet to a known-safe amount without releasing the table seat
+// (called after every round settles, so a crash mid-session loses at most
+// the current round rather than the whole session).
+async function syncWalletChips(amount){
+  if(!S.account) return;
+  const val = Math.max(0, Math.floor(amount));
+  try{ await db.ref('bjusers/'+S.account.key).update({chips:val}); }catch(e){}
+  S.account.chips = val;
+}
+// syncs the wallet AND releases the table seat — called when actually
+// leaving a table (normal leave or the bankrupt-kick flow).
+async function releaseTableAndSyncWallet(amount){
+  if(!S.account) return;
+  const val = Math.max(0, Math.floor(amount));
+  try{ await db.ref('bjusers/'+S.account.key).update({chips:val, activeRoom:null}); }catch(e){}
+  S.account.chips = val; S.account.activeRoom = null;
+}
+
+async function loadLeaderboard(){
+  S.leaderboard = 'loading'; render();
+  try{
+    const snap = await db.ref('bjusers').once('value');
+    const all = [];
+    snap.forEach(child=>{
+      const u = child.val();
+      all.push({key:child.key, name:u.displayName||child.key, avatar:u.avatar||AVATAR_OPTIONS[0], chips:u.chips||0});
+    });
+    all.sort((a,b)=>b.chips-a.chips);
+    S.leaderboard = all;
+  }catch(e){ S.leaderboard = 'error'; }
+  render();
+}
+
+function fmtCountdown(ms){
+  if(ms<=0) return null;
+  const totalSec = Math.ceil(ms/1000);
+  const h = Math.floor(totalSec/3600);
+  const m = Math.floor((totalSec%3600)/60);
+  const s = totalSec%60;
+  return h>0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+}
+function updateLandingCountdowns(){
+  if(!S.account) return;
+  const wheelEl = document.getElementById('wheelCooldown');
+  const wheelBtn = document.getElementById('btnSpinWheel');
+  if(wheelEl && wheelBtn){
+    const remain = WHEEL_COOLDOWN_MS - (Date.now()-(S.account.lastWheelAt||0));
+    const txt = fmtCountdown(remain);
+    if(txt){ wheelEl.textContent = `หมุนได้อีกครั้งใน ${txt}`; wheelBtn.disabled = true; }
+    else { wheelEl.textContent = 'พร้อมหมุน!'; wheelBtn.disabled = !!S.spinningWheel; }
+  }
+  const slotEl = document.getElementById('slotCooldown');
+  const slotBtn = document.getElementById('btnPlaySlot');
+  if(slotEl && slotBtn){
+    const remain = SLOT_COOLDOWN_MS - (Date.now()-(S.account.lastSlotAt||0));
+    const txt = fmtCountdown(remain);
+    if(txt){ slotEl.textContent = `เล่นได้อีกครั้งใน ${txt}`; slotBtn.disabled = true; }
+    else { slotEl.textContent = 'พร้อมเล่น!'; slotBtn.disabled = !!S.spinningSlot; }
+  }
+}
+setInterval(()=>{ if(S.screen==='landing') updateLandingCountdowns(); }, 1000);
+
+async function spinWheel(){
+  if(!S.account || S.spinningWheel) return;
+  if(WHEEL_COOLDOWN_MS - (Date.now()-(S.account.lastWheelAt||0)) > 0) return;
+  S.spinningWheel = true; S.wheelResult=null; render();
+  let idx=-1, reward=0, err='';
+  const {committed} = await txUser(S.account.key, u=>{
+    const now = Date.now();
+    if(now-(u.lastWheelAt||0) < WHEEL_COOLDOWN_MS){ err='ยังไม่ถึงเวลาหมุนใหม่'; return false; }
+    idx = Math.floor(Math.random()*WHEEL_SEGMENTS.length);
+    reward = WHEEL_SEGMENTS[idx];
+    u.chips = (u.chips||0)+reward;
+    u.lastWheelAt = now;
+  });
+  if(!committed){ S.spinningWheel=false; S.err=err||'หมุนไม่สำเร็จ ลองใหม่'; render(); return; }
+  S.account.chips += reward; S.account.lastWheelAt = Date.now();
+  const wheelEl = document.getElementById('wheelDisc');
+  if(wheelEl){
+    const segDeg = 360/WHEEL_SEGMENTS.length;
+    const targetDeg = 360*4 + (360 - (idx*segDeg + segDeg/2));
+    wheelEl.style.transition = 'transform 1.6s cubic-bezier(.2,.7,.2,1)';
+    wheelEl.style.transform = `rotate(${targetDeg}deg)`;
+  }
+  sfx('win');
+  setTimeout(()=>{
+    S.spinningWheel=false;
+    S.wheelResult = `ได้ไป ${reward} ชิป! 🎉`;
+    loadLeaderboard();
+  }, 1700);
+}
+
+async function playSlot(){
+  if(!S.account || S.spinningSlot) return;
+  if(SLOT_COOLDOWN_MS - (Date.now()-(S.account.lastSlotAt||0)) > 0) return;
+  S.spinningSlot = true; S.slotResult=null; render();
+  let reels=[], payout=0, err='';
+  const {committed} = await txUser(S.account.key, u=>{
+    const now = Date.now();
+    if(now-(u.lastSlotAt||0) < SLOT_COOLDOWN_MS){ err='รอคูลดาวน์ก่อนนะ'; return false; }
+    reels = [0,1,2].map(()=>SLOT_SYMBOLS[Math.floor(Math.random()*SLOT_SYMBOLS.length)]);
+    payout = slotPayout(reels[0],reels[1],reels[2]);
+    u.chips = (u.chips||0)+payout;
+    u.lastSlotAt = now;
+  });
+  if(!committed){ S.spinningSlot=false; S.err=err||'เล่นไม่สำเร็จ ลองใหม่'; render(); return; }
+  S.account.chips += payout; S.account.lastSlotAt = Date.now();
+  setTimeout(()=>{
+    S.spinningSlot=false;
+    S.slotResult = { reels, payout };
+    if(payout>0) sfx('win');
+    loadLeaderboard();
+  }, 900);
+}
+
 /* ---------- storage helpers ---------- */
 function normalizeRoom(r){
   if(!r) return r;
@@ -324,6 +567,7 @@ function normalizeRoom(r){
   if(!r.status) r.status = 'lobby';
   if(typeof r.round!=='number') r.round = 0;
   if(r.dealerPlayerId===undefined) r.dealerPlayerId = null;
+  if(typeof r.aiDealer!=='boolean') r.aiDealer = false;
   if(typeof r.turnTimeLimit!=='number') r.turnTimeLimit = TURN_LIMIT_MS;
   if(typeof r.turnStartedAt!=='number') r.turnStartedAt = 0;
   return r;
@@ -433,8 +677,12 @@ function sfx(name){
 
 /* ---------- app state ---------- */
 const S = {
-  screen:'landing', // landing | lobby | betting | playing | roundend
-  myId: uid(), myName:'', myAvatar: AVATAR_OPTIONS[0],
+  screen:'auth', // auth | landing | lobby | betting | playing | roundend
+  myId: null, myName:'', myAvatar: AVATAR_OPTIONS[0],
+  account:null,
+  authMode:'login', authName:'', authPassword:'', authAvatar:AVATAR_OPTIONS[0], authErr:'',
+  leaderboard: undefined,
+  wheelResult:null, slotResult:null, spinningWheel:false, spinningSlot:false,
   roomCode:'', room:null,
   pollTimer:null, roomsPollTimer:null,
   showJoinBox:false, publicRooms:undefined,
@@ -442,7 +690,10 @@ const S = {
   betAmount: MIN_BET,
   err:'',
   _lastScreen:null,
-  _presenceRef:null
+  _presenceRef:null,
+  showBankruptModal:false,
+  _bankruptNotified:false,
+  _lastSyncedRound:-1
 };
 let sceneAnim = '';
 const app = document.getElementById('app');
@@ -455,6 +706,15 @@ function startPolling(){
     if(!snap.exists()) return;
     const fresh = normalizeRoom(snap.val());
     S.room = fresh;
+    const me = fresh.players.find(p=>p.id===S.myId);
+    if(me && me.status==='bankrupt' && !S._bankruptNotified){
+      S._bankruptNotified = true;
+      S.showBankruptModal = true;
+    }
+    if(fresh.status==='roundend' && me && S._lastSyncedRound!==fresh.round){
+      S._lastSyncedRound = fresh.round;
+      syncWalletChips(me.chips);
+    }
     if(fresh.status==='lobby') S.screen='lobby';
     else if(fresh.status==='betting') S.screen='betting';
     else if(fresh.status==='playing') S.screen='playing';
@@ -484,11 +744,12 @@ function updateTimerBar(){
 
 /* ---------- room actions ---------- */
 async function createRoom(){
-  if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
+  if(S.account.activeRoom){ S.err='บัญชีนี้กำลังเล่นอยู่ที่โต๊ะอื่นอยู่ ออกจากโต๊ะเดิมก่อนนะ'; render(); return; }
   const code = roomCodeGen();
-  const me = {id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, chips:STARTING_CHIPS, bet:0, hand:[], status:'waiting', result:null, lastDelta:0, doubled:false};
+  const chips = S.account.chips||0;
+  const me = {id:S.myId, name:S.myName, avatar:S.myAvatar, chips, bet:0, hand:[], status:'waiting', result:null, lastDelta:0, doubled:false};
   const room = {
-    code, hostId:S.myId, status:'lobby',
+    code, hostId:S.myId, status:'lobby', aiDealer:false,
     players:[me], dealer:{hand:[], revealed:false},
     deck:[], order:[], currentIndex:0, turnStartedAt:0, turnTimeLimit:TURN_LIMIT_MS,
     round:0, log:[`${me.name} สร้างโต๊ะ`], createdAt:Date.now()
@@ -496,33 +757,43 @@ async function createRoom(){
   try{
     await db.ref('bjrooms/'+code).set(room);
   }catch(e){ S.err='สร้างโต๊ะไม่สำเร็จ ลองใหม่'; render(); return; }
+  await withdrawAllChipsForTable(code);
   S.roomCode = code; S.room = room; S.screen='lobby'; S.err='';
+  S.showBankruptModal=false; S._bankruptNotified=false; S._lastSyncedRound=-1;
   saveSession(); startPolling(); render();
 }
 
 async function joinRoom(codeInput){
   const code = codeInput.trim().toUpperCase();
-  if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
   if(!code){ S.err='ใส่รหัสโต๊ะก่อนนะ'; render(); return; }
+  if(S.account.activeRoom && S.account.activeRoom!==code){ S.err='บัญชีนี้กำลังเล่นอยู่ที่โต๊ะอื่นอยู่ ออกจากโต๊ะเดิมก่อนนะ'; render(); return; }
+  const chips = S.account.chips||0;
   let joinError=''; let alreadySeated=false;
   const {committed, room} = await txRoom(code, r=>{
     if(r.players.some(p=>p.id===S.myId)){ alreadySeated=true; return false; }
     if(r.players.length>=6){ joinError='โต๊ะเต็มแล้ว (สูงสุด 6 คน)'; return false; }
-    if(r.players.some(p=>p.name===S.myName.trim())){ joinError='มีชื่อนี้ที่โต๊ะแล้ว ใช้ชื่ออื่น'; return false; }
-    r.players.push({id:S.myId, name:S.myName.trim(), avatar:S.myAvatar, chips:STARTING_CHIPS, bet:0, hand:[], status:'waiting', result:null, lastDelta:0, doubled:false});
-    r.log.unshift(`${S.myName.trim()} เข้าร่วมโต๊ะ`);
+    if(r.players.some(p=>p.name===S.myName)){ joinError='มีชื่อนี้ที่โต๊ะแล้ว ใช้ชื่ออื่น'; return false; }
+    r.players.push({id:S.myId, name:S.myName, avatar:S.myAvatar, chips, bet:0, hand:[], status:'waiting', result:null, lastDelta:0, doubled:false});
+    r.log.unshift(`${S.myName} เข้าร่วมโต๊ะ`);
   });
   if(!room){ S.err='ไม่พบโต๊ะนี้ เช็กรหัสอีกครั้ง'; render(); return; }
   if(!committed && !alreadySeated){ S.err = joinError || 'เข้าร่วมไม่สำเร็จ ลองใหม่'; render(); return; }
+  if(!alreadySeated) await withdrawAllChipsForTable(code);
   S.roomCode = code; S.room = room; S.err='';
   S.screen = room.status==='lobby' ? 'lobby' : room.status==='betting' ? 'betting' : room.status==='playing' ? 'playing' : 'roundend';
+  S.showBankruptModal=false; S._bankruptNotified=false; S._lastSyncedRound=-1;
   saveSession(); startPolling(); render();
 }
 
 function leaveRoom(){
   const code = S.roomCode, myId = S.myId;
+  const meP = S.room ? S.room.players.find(p=>p.id===myId) : null;
+  const finalChips = meP ? meP.chips : (S.account?S.account.chips:0);
   stopPolling(); clearSession();
-  S.roomCode=''; S.room=null; S.screen='landing'; render();
+  S.roomCode=''; S.room=null; S.screen='landing';
+  S.showBankruptModal=false; S._bankruptNotified=false;
+  render();
+  if(S.account) releaseTableAndSyncWallet(finalChips).then(()=>{ if(S.screen==='landing') render(); });
   if(!code) return;
   txRoom(code, r=>{
     if(r.status==='playing') return false; // don't disturb an active hand — the turn timer covers an abandoned turn
@@ -550,12 +821,26 @@ function pickNextDealer(r){
   return ids[0];
 }
 
+async function toggleAiDealer(checked){
+  const {room} = await txRoom(S.roomCode, r=>{
+    if(r.hostId!==S.myId) return false;
+    if(r.status!=='lobby') return false;
+    r.aiDealer = !!checked;
+  });
+  if(room){ S.room=room; render(); }
+}
+
 async function startRound(){
   const {room} = await txRoom(S.roomCode, r=>{
     if(r.hostId!==S.myId) return false;
     if(r.status!=='lobby' && r.status!=='roundend') return false;
-    if(r.players.length<2) return false; // need a dealer + at least one player
-    r.dealerPlayerId = pickNextDealer(r);
+    if(r.aiDealer){
+      if(r.players.length<1) return false; // AI banks the table, just need 1 player
+      r.dealerPlayerId = null;
+    } else {
+      if(r.players.length<2) return false; // need a human dealer + at least one player
+      r.dealerPlayerId = pickNextDealer(r);
+    }
     r.players.forEach(p=>{
       p.hand=[]; p.bet=0; p.result=null; p.lastDelta=0; p.doubled=false;
       p.status = p.id===r.dealerPlayerId ? 'dealing' : (p.chips>0 ? 'betting' : 'bankrupt');
@@ -564,8 +849,12 @@ async function startRound(){
     r.order=[]; r.currentIndex=0;
     r.round = (r.round||0)+1;
     r.status='betting';
-    const dp = r.players.find(p=>p.id===r.dealerPlayerId);
-    r.log.unshift(`— รอบที่ ${r.round} — 🎩 ${dp?dp.name:'?'} เป็นเจ้ามือรอบนี้`);
+    if(r.aiDealer){
+      r.log.unshift(`— รอบที่ ${r.round} — 🤖 เจ้ามือ AI`);
+    } else {
+      const dp = r.players.find(p=>p.id===r.dealerPlayerId);
+      r.log.unshift(`— รอบที่ ${r.round} — 🎩 ${dp?dp.name:'?'} เป็นเจ้ามือรอบนี้`);
+    }
   });
   if(room){ S.room=room; S.betAmount=Math.min(MIN_BET*2, room.players.find(p=>p.id===S.myId)?.chips||MIN_BET); render(); }
 }
@@ -588,7 +877,42 @@ function dealRound(r){
   else{ r.status='playing'; r.turnStartedAt=Date.now(); }
 }
 
+// standard house rule for the AI dealer: hit until 17+, stand on all 17s
+// (including soft 17). Natural blackjack on the first two cards never draws.
+function dealerAutoPlay(r){
+  if(isBlackjack(r.dealer.hand)) return;
+  while(handTotal(r.dealer.hand).total < 17){
+    r.dealer.hand.push(drawCard(r));
+  }
+}
+
+// worst-case chip exposure a human dealer could be on the hook for this
+// round — used to cap bets/doubles so the dealer can never go negative.
+// During betting we don't know final outcomes yet, so every live bet is
+// assumed to be a worst-case blackjack (1.5x); once hands are dealt we use
+// each player's actual status instead.
+function bettingExposure(r, overrides={}){
+  let total=0;
+  r.players.forEach(p=>{
+    if(p.id===r.dealerPlayerId) return;
+    const bet = overrides[p.id]!==undefined ? overrides[p.id] : (p.status==='ready' ? p.bet : 0);
+    total += Math.floor(bet*1.5);
+  });
+  return total;
+}
+function liveExposure(r, overrides={}){
+  let total=0;
+  r.players.forEach(p=>{
+    if(p.id===r.dealerPlayerId) return;
+    if(p.status==='bankrupt' || p.status==='waiting' || p.status==='bust') return;
+    const bet = overrides[p.id]!==undefined ? overrides[p.id] : p.bet;
+    total += p.status==='blackjack' ? Math.floor(bet*1.5) : bet;
+  });
+  return total;
+}
+
 function settleRound(r){
+  if(r.aiDealer) dealerAutoPlay(r);
   r.dealer.revealed = true;
   const dealerBJ = isBlackjack(r.dealer.hand);
   const dealerTotal = handTotal(r.dealer.hand).total;
@@ -629,16 +953,26 @@ function advanceTurn(r){
 
 async function placeBet(amount){
   amount = Math.floor(amount);
-  const {room} = await txRoom(S.roomCode, r=>{
+  let betError='';
+  const {committed, room} = await txRoom(S.roomCode, r=>{
     if(r.status!=='betting') return false;
     const me = r.players.find(p=>p.id===S.myId);
     if(!me || me.status!=='betting') return false;
     if(amount < MIN_BET || amount > me.chips) return false;
+    const dealerPlayer = r.players.find(p=>p.id===r.dealerPlayerId);
+    if(dealerPlayer){
+      const projected = bettingExposure(r, {[me.id]: amount});
+      if(projected > dealerPlayer.chips){
+        betError = `เดิมพันสูงเกินไป — เจ้ามือมีชิปพอรับความเสี่ยงได้อีกแค่ ${Math.max(0,Math.floor((dealerPlayer.chips - bettingExposure(r))/1.5))} ชิป`;
+        return false;
+      }
+    }
     me.bet = amount; me.status='ready';
     r.log.unshift(`${me.name} วางเดิมพัน ${amount} ชิป`);
     if(!r.players.some(p=>p.status==='betting')) dealRound(r);
   });
-  if(room){ S.room=room; sfx('deal'); render(); }
+  if(committed && room){ S.room=room; sfx('deal'); render(); }
+  else{ if(room) S.room=room; S.err=betError||'วางเดิมพันไม่สำเร็จ ลองใหม่'; render(); }
 }
 
 async function hit(){
@@ -684,6 +1018,11 @@ async function doubleDown(){
     if(S.myId===r.dealerPlayerId) return false; // the dealer has no personal bet to double
     const me = r.players.find(p=>p.id===S.myId);
     if(!me || me.status!=='playing' || me.hand.length!==2 || me.chips < me.bet*2) return false;
+    const dealerPlayer = r.players.find(p=>p.id===r.dealerPlayerId);
+    if(dealerPlayer){
+      const projected = liveExposure(r, {[me.id]: me.bet*2});
+      if(projected > dealerPlayer.chips) return false; // would put the human dealer's own chips negative
+    }
     me.bet *= 2; me.doubled = true;
     me.hand.push(drawCard(r));
     const t = handTotal(me.hand).total;
@@ -733,6 +1072,40 @@ async function silentRefreshPublicRooms(){
   if(!target) return;
   target.innerHTML = publicRoomsListHtml();
   wirePublicRoomsHandlers();
+}
+function leaderboardHtml(){
+  if(!S.account) return '';
+  if(S.leaderboard===undefined || S.leaderboard==='loading'){
+    return `
+      <div style="display:flex; align-items:center; gap:10px; color:var(--muted); padding:8px 0;">
+        <span class="spinner" style="width:18px; height:18px; border-width:2px;"></span>
+        <span style="font-size:.85rem;">กำลังโหลดกระดานผู้นำ...</span>
+      </div>`;
+  }
+  if(S.leaderboard==='error'){
+    return `<p class="small-note" style="margin-top:0;">โหลดกระดานผู้นำไม่ได้ (เช็ก Firebase rules สำหรับ bjusers)</p>`;
+  }
+  const list = S.leaderboard;
+  const top10 = list.slice(0,10);
+  const myIdx = list.findIndex(u=>u.key===S.account.key);
+  const myRank = myIdx>=0 ? myIdx+1 : null;
+  const meInTop = myIdx>=0 && myIdx<10;
+  return `
+    ${top10.map((u,i)=>`
+      <div class="player-row" style="${u.key===S.account.key?'background:rgba(212,175,55,.1); border-radius:8px;':''}">
+        <span class="chip-cnt" style="width:22px; flex-shrink:0;">#${i+1}</span>
+        <div class="avatar" style="width:30px; height:30px; font-size:.95rem;">${u.avatar}</div>
+        <span class="player-name">${esc(u.name)}${u.key===S.account.key?' (คุณ)':''}</span>
+        <span class="chip-cnt" style="margin-left:auto;">🪙 ${u.chips}</span>
+      </div>`).join('')}
+    ${!meInTop && myRank ? `
+      <div class="player-row" style="background:rgba(212,175,55,.1); border-radius:8px; border-top:1px dashed rgba(212,175,55,.3); margin-top:6px; padding-top:12px;">
+        <span class="chip-cnt" style="width:22px; flex-shrink:0;">#${myRank}</span>
+        <div class="avatar" style="width:30px; height:30px; font-size:.95rem;">${S.myAvatar}</div>
+        <span class="player-name">${esc(S.myName)} (คุณ)</span>
+        <span class="chip-cnt" style="margin-left:auto;">🪙 ${S.account.chips}</span>
+      </div>` : ''}
+  `;
 }
 function publicRoomsListHtml(){
   return S.publicRooms===undefined || S.publicRooms==='loading' ? `
@@ -807,12 +1180,24 @@ function rulesModalHtml(){
             <li>เกิน 21 = <b>Bust</b> แพ้ทันที ไม่ต้องรอเจ้ามือ</li>
             <li><b>Hit</b> จั่วเพิ่ม / <b>Stand</b> หยุดที่แต้มปัจจุบัน</li>
             <li><b>Double Down</b> ได้เฉพาะตอนมีไพ่ 2 ใบแรก: เพิ่มเดิมพันเป็น 2 เท่า แล้วจั่วอีกแค่ 1 ใบ บังคับหยุด</li>
-            <li>🎩 <b>เจ้ามือหมุนเวียนตามเข็มนาฬิกาทุกรอบ</b> — เป็นผู้เล่นจริง ไม่ใช่ AI เจ้ามือตัดสินใจ Hit/Stand เองได้อิสระ (ไม่บังคับ 17) และเสี่ยงจ่าย/เก็บชิปจากผู้เล่นทุกคนด้วยชิปของตัวเองจริงๆ</li>
+            <li>โต๊ะเลือกได้ 2 โหมด: <b>🎩 เจ้ามือหมุนเวียน</b> — เป็นผู้เล่นจริง ตัดสินใจ Hit/Stand เองได้อิสระ (ไม่บังคับ 17) เสี่ยงจ่าย/เก็บชิปจากผู้เล่นทุกคนด้วยชิปของตัวเองจริงๆ หรือ <b>🤖 เจ้ามือ AI</b> — เล่นตามกติกามาตรฐาน หยุดที่ 17 ขึ้นไปเสมอ ไม่ต้องมีคนนั่งเป็นเจ้ามือ</li>
             <li>เจ้ามือ Bust = ทุกคนที่เหลือชนะ / เสมอแต้ม = ได้เงินเดิมพันคืน (Push)</li>
+            <li>โหมดเจ้ามือหมุนเวียน: ระบบจะจำกัดวงเงินเดิมพัน/Double Down ไม่ให้เกินชิปที่เจ้ามือมี กันไม่ให้เจ้ามือติดลบถ้าทุกคนชนะพร้อมกัน</li>
+            <li>โหมดเจ้ามือหมุนเวียน: ระหว่างรอบ เจ้ามือจะ<b>ไม่เห็นไพ่/แต้มของผู้เล่นคนอื่น</b> (เห็นแค่หน้าไพ่คว่ำ) กันเจ้ามือได้เปรียบจากการรู้ไพ่ก่อนตัดสินใจเล่นของตัวเอง — จะเปิดให้เห็นพร้อมกันตอนจบรอบ</li>
           </ul>
           <p class="small-note" style="margin-top:10px;">หมายเหตุ: เวอร์ชันนี้ยังไม่รองรับ Split (แยกไพ่คู่) และ Insurance — จะเพิ่มทีหลังถ้าต้องการ</p>
         </div>
         <button class="btn btn-gold" id="btnCloseRules" style="margin-top:12px;">เข้าใจแล้ว</button>
+      </div>
+    </div>`;
+}
+function bankruptModalHtml(){
+  return `
+    <div class="modal-bg">
+      <div class="modal">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px;">ชิปของคุณหมดแล้ว 😢</h3>
+        <p style="font-size:.9rem; line-height:1.6;">คุณเดิมพันจนชิปหมด ระบบจะพาคุณออกจากโต๊ะนี้ กลับไปหน้าแรกเพื่อหาชิปเพิ่มได้จากวงล้อนำโชคหรือสล็อตแมชชีน แล้วค่อยกลับมาเล่นใหม่</p>
+        <button class="btn btn-gold" id="btnBankruptLeave" style="margin-top:14px; width:100%;">ออกจากโต๊ะ</button>
       </div>
     </div>`;
 }
@@ -831,31 +1216,129 @@ function resultBadge(result){
   const [t,c] = map[result] || ['',''];
   return c ? `<span class="status-badge ${c}">${t}</span>` : '';
 }
+// same idea as statusBadge, but for the acting human dealer's own view: a
+// finished hand (stand/bust/blackjack) all read as one neutral label so the
+// dealer can't tell whether a player is safely under, busted, or holds a
+// natural 21 before deciding their own play.
+function dealerSafeStatusBadge(status){
+  if(status==='stand' || status==='bust' || status==='blackjack'){
+    return `<span class="status-badge badge-stand">จบตาแล้ว</span>`;
+  }
+  return statusBadge(status);
+}
 
 /* ---------- rendering ---------- */
 function render(){
   const changed = S._lastScreen !== S.screen;
   sceneAnim = changed ? 'scene-in' : '';
   S._lastScreen = S.screen;
-  if(S.screen==='landing') renderLanding();
+  if(S.screen==='auth') renderAuth();
+  else if(S.screen==='landing') renderLanding();
   else if(S.screen==='lobby') renderLobby();
   else if(S.screen==='betting') renderBetting();
   else if(S.screen==='playing') renderPlaying();
   else if(S.screen==='roundend') renderRoundEnd();
+  if(S.showBankruptModal){
+    app.insertAdjacentHTML('beforeend', bankruptModalHtml());
+    document.getElementById('btnBankruptLeave').onclick = ()=>{ S.showBankruptModal=false; leaveRoom(); };
+  }
+}
+
+function renderAuth(){
+  const mode = S.authMode||'login';
+  app.innerHTML = `
+    <div class="${sceneAnim}">
+      ${gameSwitcherHtml()}
+      <div class="brand"><h1>♠ Blackjack ♠</h1><div class="sub">ล็อกอินเพื่อเก็บชิปของคุณไว้ข้ามโต๊ะ ข้ามรอบ</div></div>
+      <div class="panel">
+        <div class="btn-row" style="margin-bottom:14px;">
+          <button class="btn ${mode==='login'?'btn-gold':'btn-ghost'}" id="btnModeLogin" style="flex:1;">เข้าสู่ระบบ</button>
+          <button class="btn ${mode==='register'?'btn-gold':'btn-ghost'}" id="btnModeRegister" style="flex:1;">สมัครใหม่</button>
+        </div>
+        <label>ชื่อผู้ใช้</label>
+        <input type="text" id="authName" placeholder="เช่น NPY" value="${esc(S.authName||'')}" maxlength="16">
+        <label style="margin-top:12px;">รหัสผ่าน</label>
+        <input type="password" id="authPassword" placeholder="อย่างน้อย 4 ตัวอักษร" value="${esc(S.authPassword||'')}" maxlength="40">
+        ${mode==='register' ? `
+        <label style="margin-top:12px;">เลือกอวาตาร์</label>
+        <div class="avatar-picker">
+          ${AVATAR_OPTIONS.map(a=>`<button class="avatar-opt ${a===(S.authAvatar||AVATAR_OPTIONS[0])?'active':''}" data-avatar="${a}">${a}</button>`).join('')}
+        </div>` : ''}
+        ${S.authErr?`<p class="small-note" style="color:#ffb3ac;">${esc(S.authErr)}</p>`:''}
+        <div class="btn-row">
+          <button class="btn btn-gold" id="btnAuthSubmit" style="flex:1;">${mode==='login'?'เข้าสู่ระบบ':'สมัครสมาชิก'}</button>
+        </div>
+        <p class="small-note" style="margin-top:12px;">หมายเหตุ: รหัสผ่านถูกเก็บแบบ hash ไว้ในฐานข้อมูลกลาง เหมาะกับเล่นกันเองในกลุ่มเพื่อน แต่ไม่ใช่ระบบความปลอดภัยระดับธนาคาร อย่าใช้รหัสผ่านซ้ำกับบัญชีสำคัญอื่นๆ</p>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnModeLogin').onclick = ()=>{ S.authMode='login'; S.authErr=''; render(); };
+  document.getElementById('btnModeRegister').onclick = ()=>{ S.authMode='register'; S.authErr=''; render(); };
+  document.getElementById('authName').oninput = e=>{ S.authName=e.target.value; };
+  document.getElementById('authPassword').oninput = e=>{ S.authPassword=e.target.value; };
+  document.querySelectorAll('.avatar-opt').forEach(btn=>{
+    btn.onclick = ()=>{ S.authAvatar = btn.dataset.avatar; render(); };
+  });
+  document.getElementById('btnAuthSubmit').onclick = (e)=>{
+    e.currentTarget.disabled = true;
+    if(mode==='login') loginAccount(S.authName, S.authPassword);
+    else registerAccount(S.authName, S.authPassword, S.authAvatar);
+  };
 }
 
 function renderLanding(){
   app.innerHTML = `
     <div class="${sceneAnim}">
       ${gameSwitcherHtml()}
-      <div class="brand"><h1>♠ Blackjack ♠</h1><div class="sub">เล่นกับเจ้ามือ AI แบบหลายคนพร้อมกัน</div></div>
+      <div class="brand"><h1>♠ Blackjack ♠</h1><div class="sub">เล่นหลายคนพร้อมกัน — เลือกได้ว่าจะให้เจ้ามือหมุนเวียนหรือเป็น AI</div></div>
+
       <div class="panel">
-        <label>ชื่อผู้เล่น</label>
-        <input type="text" id="nameInput" placeholder="ใส่ชื่อของคุณ" value="${esc(S.myName)}" maxlength="16">
-        <div class="avatar-picker">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div class="avatar" style="width:44px; height:44px; font-size:1.3rem;">${S.myAvatar}</div>
+          <div style="flex:1; min-width:0;">
+            <div class="player-name" style="font-size:1.05rem;">${esc(S.myName)}</div>
+            <div class="chip-cnt">🪙 ${S.account.chips}</div>
+          </div>
+          <button class="btn btn-ghost" id="btnLogout" style="padding:6px 12px; font-size:.78rem;">ออกจากระบบ</button>
+        </div>
+        <div class="avatar-picker" style="margin-top:12px;">
           ${AVATAR_OPTIONS.map(a=>`<button class="avatar-opt ${a===S.myAvatar?'active':''}" data-avatar="${a}">${a}</button>`).join('')}
         </div>
         ${S.err?`<p class="small-note" style="color:#ffb3ac;">${esc(S.err)}</p>`:''}
+      </div>
+
+      <div class="panel">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <h3 style="color:var(--gold-soft); margin:0;">🏆 กระดานผู้นำ</h3>
+          <button class="btn btn-ghost" id="btnRefreshLeaderboard" style="padding:4px 10px; font-size:.72rem;">🔄 รีเฟรช</button>
+        </div>
+        <div id="leaderboardList">${leaderboardHtml()}</div>
+      </div>
+
+      <div class="panel" style="text-align:center;">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px;">🎡 วงล้อนำโชค</h3>
+        <div style="width:150px; height:150px; margin:0 auto 14px; position:relative;">
+          <div id="wheelDisc" style="width:100%; height:100%; border-radius:50%; border:4px solid var(--gold);
+            background:conic-gradient(var(--felt-3) 0deg 45deg, var(--felt-2) 45deg 90deg, var(--felt-3) 90deg 135deg, var(--felt-2) 135deg 180deg, var(--felt-3) 180deg 225deg, var(--felt-2) 225deg 270deg, var(--felt-3) 270deg 315deg, var(--felt-2) 315deg 360deg);">
+          </div>
+          <div style="position:absolute; top:-10px; left:50%; transform:translateX(-50%); width:0; height:0; border-left:7px solid transparent; border-right:7px solid transparent; border-top:12px solid var(--gold-soft);"></div>
+        </div>
+        <button class="btn btn-gold" id="btnSpinWheel">หมุนวงล้อ</button>
+        <div class="small-note" id="wheelCooldown" style="margin-top:8px;"></div>
+        ${S.wheelResult?`<p style="color:var(--gold-soft); font-weight:700; margin-top:8px;">${esc(S.wheelResult)}</p>`:''}
+      </div>
+
+      <div class="panel" style="text-align:center;">
+        <h3 style="color:var(--gold-soft); margin-bottom:10px;">🎰 สล็อตแมชชีน</h3>
+        <div style="display:flex; gap:8px; justify-content:center; margin-bottom:14px;">
+          ${[0,1,2].map(i=>`<div class="card small" style="width:52px; height:66px; font-size:1.4rem; display:flex; align-items:center; justify-content:center;">${S.slotResult ? `<span style="${isRed(S.slotResult.reels[i])?'color:var(--red)':''}">${S.slotResult.reels[i]}</span>` : '?'}</div>`).join('')}
+        </div>
+        <button class="btn btn-gold" id="btnPlaySlot">ดึงคันโยก</button>
+        <div class="small-note" id="slotCooldown" style="margin-top:8px;"></div>
+        ${S.slotResult ? `<p style="color:${S.slotResult.payout>0?'var(--gold-soft)':'var(--muted)'}; font-weight:700; margin-top:8px;">${S.slotResult.payout>0?`ได้ไป ${S.slotResult.payout} ชิป! 🎉`:'ไม่ตรงเลย ลองใหม่คราวหน้า'}</p>` : ''}
+      </div>
+
+      <div class="panel">
         <div class="btn-row">
           <button class="btn btn-gold" id="btnCreate" style="flex:1;">🪑 สร้างโต๊ะใหม่</button>
           <button class="btn btn-ghost" id="btnJoin" style="flex:1;">🔑 เข้าร่วมโต๊ะ</button>
@@ -877,13 +1360,19 @@ function renderLanding(){
       </div>
     </div>
   `;
-  document.getElementById('nameInput').oninput = e=>{ S.myName = e.target.value; };
+  document.getElementById('btnLogout').onclick = logoutAccount;
   document.querySelectorAll('.avatar-opt').forEach(btn=>{
-    btn.onclick = ()=>{ S.myAvatar = btn.dataset.avatar; render(); };
+    btn.onclick = ()=>{
+      S.myAvatar = btn.dataset.avatar;
+      if(S.account){ S.account.avatar = S.myAvatar; db.ref('bjusers/'+S.account.key).update({avatar:S.myAvatar}).catch(()=>{}); }
+      render();
+    };
   });
-  document.getElementById('btnCreate').onclick = createRoom;
+  document.getElementById('btnRefreshLeaderboard').onclick = loadLeaderboard;
+  document.getElementById('btnSpinWheel').onclick = spinWheel;
+  document.getElementById('btnPlaySlot').onclick = playSlot;
+  document.getElementById('btnCreate').onclick = (e)=>{ e.currentTarget.disabled = true; createRoom(); };
   document.getElementById('btnJoin').onclick = ()=>{
-    if(!S.myName.trim()){ S.err='ใส่ชื่อก่อนนะ'; render(); return; }
     S.showJoinBox = true; render();
     document.getElementById('codeInput')?.focus();
     if(S.publicRooms===undefined) loadPublicRooms(); else startRoomsPolling();
@@ -896,6 +1385,7 @@ function renderLanding(){
     joinRoom(v);
   });
   wirePublicRoomsHandlers();
+  updateLandingCountdowns();
 }
 
 function renderLobby(){
@@ -923,14 +1413,24 @@ function renderLobby(){
             ${p.id===room.hostId?'<span class="tag">เจ้าของโต๊ะ</span>':''}
             <span class="chip-cnt" style="margin-left:auto;">🪙 ${p.chips}</span>
           </div>`).join('')}
-        <p class="small-note">ทุกคนเริ่มด้วยชิป ${STARTING_CHIPS} · เดิมพันขั้นต่ำ ${MIN_BET}</p>
-        <p class="small-note">🎩 เจ้ามือจะหมุนเวียนตามเข็มนาฬิกาทุกรอบ เสี่ยงจ่าย/เก็บชิปเองจริงๆ</p>
+        <p class="small-note">ชิปที่เห็นคือยอดจากบัญชีของแต่ละคน · เดิมพันขั้นต่ำ ${MIN_BET}</p>
+      </div>
+      <div class="panel">
+        <label style="display:flex; align-items:center; gap:10px; margin-bottom:0; cursor:${isHost?'pointer':'default'};">
+          <input type="checkbox" id="chkAiDealer" ${room.aiDealer?'checked':''} ${isHost?'':'disabled'} style="width:18px; height:18px; accent-color:var(--gold);">
+          <span style="color:var(--cream); font-size:.92rem;">🤖 ใช้เจ้ามือ AI (มาตรฐาน — หยุดที่ 17 ขึ้นไปเสมอ)</span>
+        </label>
+        <p class="small-note" style="margin-top:8px;">
+          ${room.aiDealer
+            ? '🤖 เจ้ามือคือ AI ไม่ต้องมีคนนั่งเป็นเจ้ามือ ทุกคนวางเดิมพันและเล่นได้เลย เริ่มได้ตั้งแต่ 1 คน'
+            : '🎩 เจ้ามือจะหมุนเวียนตามเข็มนาฬิกาทุกรอบ เป็นผู้เล่นจริง เสี่ยงจ่าย/เก็บชิปเองจริงๆ (ต้องมีอย่างน้อย 2 คน)'}
+        </p>
       </div>
       ${isHost ? `
       <div class="btn-row">
-        <button class="btn btn-gold" id="btnStart" style="flex:1;" ${room.players.length<2?'disabled':''}>🎲 เริ่มเกม</button>
+        <button class="btn btn-gold" id="btnStart" style="flex:1;" ${room.players.length<(room.aiDealer?1:2)?'disabled':''}>🎲 เริ่มเกม</button>
       </div>
-      ${room.players.length<2? `<p class="small-note" style="text-align:center;">ต้องมีอย่างน้อย 2 คน (เจ้ามือ + ผู้เล่น 1 คน) ถึงจะเริ่มได้</p>` : ''}
+      ${room.players.length<(room.aiDealer?1:2)? `<p class="small-note" style="text-align:center;">${room.aiDealer?'ต้องมีอย่างน้อย 1 คนถึงจะเริ่มได้':'ต้องมีอย่างน้อย 2 คน (เจ้ามือ + ผู้เล่น 1 คน) ถึงจะเริ่มได้'}</p>` : ''}
       ` : `<p class="small-note" style="text-align:center; margin-top:14px;">รอเจ้าของโต๊ะกดเริ่มเกม...</p>`}
       <div class="btn-row">
         <button class="btn btn-danger" id="btnLeave" style="flex:1;">ออกจากโต๊ะ</button>
@@ -939,6 +1439,7 @@ function renderLobby(){
     </div>
   `;
   if(isHost) document.getElementById('btnStart').onclick = startRound;
+  if(isHost) document.getElementById('chkAiDealer').onchange = (e)=>{ toggleAiDealer(e.target.checked); };
   document.getElementById('btnLeave').onclick = leaveRoom;
   document.getElementById('btnCopyCode').onclick = (e)=>{
     navigator.clipboard?.writeText(room.code);
@@ -952,7 +1453,17 @@ function renderLobby(){
 function renderBetting(){
   const room = S.room;
   const me = room.players.find(p=>p.id===S.myId);
-  const maxBet = me ? me.chips : 0;
+  const dealerPlayer = room.players.find(p=>p.id===room.dealerPlayerId);
+  let maxBet = me ? me.chips : 0;
+  let dealerCapNote = '';
+  if(dealerPlayer && me){
+    const already = bettingExposure(room);
+    const capBet = Math.max(0, Math.floor((dealerPlayer.chips - already)/1.5));
+    if(capBet < maxBet){
+      maxBet = capBet;
+      dealerCapNote = `🎩 เจ้ามือมีชิปจำกัด — เดิมพันได้สูงสุด ${maxBet} ชิปรอบนี้ (กันเจ้ามือติดลบ)`;
+    }
+  }
   if(S.betAmount > maxBet) S.betAmount = Math.min(MIN_BET, maxBet);
   app.innerHTML = `
     <div class="${sceneAnim}">
@@ -969,13 +1480,13 @@ function renderBetting(){
           <p class="small-note">ไม่ต้องวางเดิมพัน — รอผู้เล่นคนอื่นวางเดิมพันให้ครบก่อน แล้วจะแจกไพ่ ตาคุณจะมาทีหลังสุด</p>
         ` : me && me.status==='bankrupt' ? `
           <h3 style="color:var(--gold-soft);">ชิปของคุณหมดแล้ว 😢</h3>
-          <p class="small-note">รอดูเพื่อนเล่นไปก่อน หรือออกจากโต๊ะแล้วสร้าง/เข้าร่วมโต๊ะใหม่เพื่อเริ่มชิปใหม่</p>
+          <p class="small-note">รอดูเพื่อนเล่นไปก่อน หรือออกจากโต๊ะไปหาชิปเพิ่มจากวงล้อนำโชค/สล็อตแมชชีนที่หน้าแรก</p>
         ` : me && me.status==='ready' ? `
           <h3 style="color:var(--gold-soft);">วางเดิมพัน ${me.bet} ชิปแล้ว ✅</h3>
           <p class="small-note">รอผู้เล่นคนอื่นวางเดิมพัน...</p>
         ` : `
           <h3 style="color:var(--gold-soft); margin-bottom:6px;">วางเดิมพันของคุณ</h3>
-          <p class="small-note" style="margin-bottom:10px;">มีชิป 🪙 ${maxBet}</p>
+          <p class="small-note" style="margin-bottom:10px;">มีชิป 🪙 ${me?me.chips:0}</p>
           <div class="bet-display" id="betDisplay">${S.betAmount}</div>
           <div class="chip-row">
             ${BET_PRESETS.map(v=>`<button class="chip-btn" data-add="${v}" ${v>maxBet?'disabled style="opacity:.35"':''}>+${v}</button>`).join('')}
@@ -985,6 +1496,8 @@ function renderBetting(){
             <button class="btn btn-ghost" id="btnAllIn">All-in (${maxBet})</button>
             <button class="btn btn-gold" id="btnConfirmBet" ${S.betAmount<MIN_BET||S.betAmount>maxBet?'disabled':''}>ยืนยันเดิมพัน</button>
           </div>
+          ${dealerCapNote ? `<p class="small-note" style="margin-top:10px;">${dealerCapNote}</p>` : ''}
+          ${S.err?`<p class="small-note" style="color:#ffb3ac;">${esc(S.err)}</p>`:''}
         `}
       </div>
       <div class="panel">
@@ -1008,11 +1521,11 @@ function renderBetting(){
       if(btn.disabled) return;
       sfx('chip');
       S.betAmount = Math.min(maxBet, S.betAmount + Number(btn.dataset.add));
-      render();
+      S.err=''; render();
     };
   });
-  document.getElementById('btnClearBet')?.addEventListener('click', ()=>{ S.betAmount=0; render(); });
-  document.getElementById('btnAllIn')?.addEventListener('click', ()=>{ S.betAmount=maxBet; render(); });
+  document.getElementById('btnClearBet')?.addEventListener('click', ()=>{ S.betAmount=0; S.err=''; render(); });
+  document.getElementById('btnAllIn')?.addEventListener('click', ()=>{ S.betAmount=maxBet; S.err=''; render(); });
   document.getElementById('btnConfirmBet')?.addEventListener('click', (e)=>{
     e.currentTarget.disabled = true;
     placeBet(S.betAmount);
@@ -1036,7 +1549,8 @@ function renderPlaying(){
   const dealerTotal = handTotal(room.dealer.hand).total;
   const pct = Math.max(0, 100 - ((Date.now()-room.turnStartedAt)/room.turnTimeLimit)*100);
   const myTotal = me ? handTotal(me.hand).total : 0;
-  const canDouble = isMyTurn && !iAmDealer && me && me.hand.length===2 && me.chips >= me.bet*2;
+  const canDouble = isMyTurn && !iAmDealer && me && me.hand.length===2 && me.chips >= me.bet*2
+    && (!dealerPlayer || liveExposure(room, {[me.id]: me.bet*2}) <= dealerPlayer.chips);
   const dealerTurnActive = curId===room.dealerPlayerId;
   app.innerHTML = `
     <div class="${sceneAnim}">
@@ -1048,7 +1562,7 @@ function renderPlaying(){
         </span>
       </div>
       <div class="dealer-area ${dealerTurnActive?'turn':''}">
-        <div class="dealer-label">🎩 เจ้ามือ${dealerPlayer?` — ${esc(dealerPlayer.name)}${iAmDealer?' (คุณ)':''}`:''}</div>
+        <div class="dealer-label">${room.aiDealer?'🤖 เจ้ามือ AI':`🎩 เจ้ามือ${dealerPlayer?` — ${esc(dealerPlayer.name)}${iAmDealer?' (คุณ)':''}`:''}`}</div>
         <div class="hand-row">
           ${room.dealer.hand.map((c,i)=> (i===1 && !showDealerFull) ? backCardEl(false, c.id) : cardEl(c,false)).join('')}
         </div>
@@ -1067,12 +1581,17 @@ function renderPlaying(){
         ${room.players.filter(p=>p.status!=='waiting' && p.status!=='bankrupt' && p.id!==room.dealerPlayerId).map(p=>{
           const isTurn = p.id===curId;
           const total = handTotal(p.hand).total;
+          // the human dealer plays last and decides freely (no fixed 17 rule),
+          // so letting them see everyone's cards/outcome before their own turn
+          // would be a real information advantage — keep hands hidden from
+          // the dealer's own view until settleRound reveals everything.
+          const hideFromDealer = iAmDealer;
           return `
-          <div class="seat ${isTurn?'turn':''} ${p.status==='bust'?'out':''}">
+          <div class="seat ${isTurn?'turn':''} ${!hideFromDealer && p.status==='bust'?'out':''}">
             <div class="nm">${p.avatar} ${esc(p.name)}</div>
-            <div class="hand-row">${p.hand.map(c=>cardEl(c,true)).join('')}</div>
-            <div class="hand-total" style="font-size:1rem;">${total}${p.doubled?' (2x)':''}</div>
-            ${statusBadge(p.status)}
+            <div class="hand-row">${hideFromDealer ? p.hand.map(c=>backCardEl(true,c.id)).join('') : p.hand.map(c=>cardEl(c,true)).join('')}</div>
+            <div class="hand-total" style="font-size:1rem;">${hideFromDealer ? '?' : `${total}${p.doubled?' (2x)':''}`}</div>
+            ${hideFromDealer ? dealerSafeStatusBadge(p.status) : statusBadge(p.status)}
           </div>`;
         }).join('')}
       </div>
@@ -1121,7 +1640,7 @@ function renderRoundEnd(){
         </span>
       </div>
       <div class="dealer-area">
-        <div class="dealer-label">🎩 เจ้ามือ${dealerPlayer?` — ${esc(dealerPlayer.name)}${dealerPlayer.id===S.myId?' (คุณ)':''}`:''}</div>
+        <div class="dealer-label">${room.aiDealer?'🤖 เจ้ามือ AI':`🎩 เจ้ามือ${dealerPlayer?` — ${esc(dealerPlayer.name)}${dealerPlayer.id===S.myId?' (คุณ)':''}`:''}`}</div>
         <div class="hand-row">${room.dealer.hand.map(c=>cardEl(c,false)).join('')}</div>
         <div class="hand-total">${dealerTotal}${dealerTotal>21?' (Bust!)':''}</div>
         ${dealerPlayer ? `
@@ -1161,28 +1680,74 @@ function renderRoundEnd(){
 }
 
 /* ---------- boot ---------- */
-async function init(){
+// runs once an account is loaded (fresh login/register, or a restored auth
+// session on page load): resumes an in-progress table if one is still live,
+// otherwise lands on the account home screen.
+async function afterAuthReady(){
+  loadLeaderboard();
   const session = loadSession();
-  if(session){
+  if(session && session.myId===S.myId){
     app.innerHTML = `
       <div style="display:flex; align-items:center; justify-content:center; gap:10px; margin-top:40px; color:var(--muted);">
         <div class="spinner" style="width:20px; height:20px; border-width:2px;"></div>
         <span>กำลังเชื่อมต่อกลับเข้าโต๊ะ...</span>
       </div>`;
     const room = await loadRoom(session.roomCode);
-    const stillIn = room && room.players.some(p=>p.id===session.myId);
+    const stillIn = room && room.players.some(p=>p.id===S.myId);
     if(room && stillIn){
-      S.myId = session.myId;
-      S.myName = session.myName || '';
-      S.myAvatar = session.myAvatar || AVATAR_OPTIONS[0];
       S.roomCode = session.roomCode;
       S.room = room;
       S.screen = room.status==='lobby'?'lobby':room.status==='betting'?'betting':room.status==='playing'?'playing':'roundend';
+      S._lastSyncedRound=-1;
       saveSession(); startPolling(); render();
       return;
     }
     clearSession();
+  } else if(session){
+    clearSession(); // belongs to a different account that was logged in on this browser before
   }
+  // no local session (new device, or it was cleared) — if the account still
+  // thinks it's seated somewhere, check the server and resume there instead
+  // of leaving the balance stranded at an orphaned table.
+  if(S.account && S.account.activeRoom){
+    const stale = await loadRoom(S.account.activeRoom);
+    const stillThere = stale && stale.players.some(p=>p.id===S.myId);
+    if(stillThere){
+      S.roomCode = S.account.activeRoom;
+      S.room = stale;
+      S.screen = stale.status==='lobby'?'lobby':stale.status==='betting'?'betting':stale.status==='playing'?'playing':'roundend';
+      S._lastSyncedRound=-1;
+      saveSession(); startPolling(); render();
+      return;
+    }
+    try{ await db.ref('bjusers/'+S.account.key).update({activeRoom:null}); }catch(e){}
+    S.account.activeRoom = null;
+  }
+  S.screen='landing';
+  render();
+}
+
+async function init(){
+  const authSession = loadAuthSession();
+  if(authSession){
+    app.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:center; gap:10px; margin-top:40px; color:var(--muted);">
+        <div class="spinner" style="width:20px; height:20px; border-width:2px;"></div>
+        <span>กำลังเข้าสู่ระบบ...</span>
+      </div>`;
+    let snap=null;
+    try{ snap = await db.ref('bjusers/'+authSession.key).once('value'); }catch(e){}
+    if(snap && snap.exists()){
+      S.account = snap.val();
+      S.myId = 'u_'+S.account.key;
+      S.myName = S.account.displayName;
+      S.myAvatar = S.account.avatar || AVATAR_OPTIONS[0];
+      await afterAuthReady();
+      return;
+    }
+    clearAuthSession();
+  }
+  S.screen='auth';
   render();
 }
 init();
