@@ -139,8 +139,9 @@
   .dealer-area{
     background:radial-gradient(ellipse at center, var(--felt-2), var(--felt-1));
     border:2px solid rgba(212,175,55,.3); border-radius:24px; padding:22px 18px; margin-bottom:14px;
-    text-align:center; position:relative; overflow:hidden;
+    text-align:center; position:relative; overflow:hidden; transition:border-color .2s ease;
   }
+  .dealer-area.turn{border-color:var(--gold); animation:pulseRing 1.9s ease-in-out infinite;}
   .dealer-area::before{content:'♠ ♥ ♦ ♣ ♠ ♥ ♦ ♣ ♠ ♥ ♦ ♣'; position:absolute; inset:0; z-index:0; pointer-events:none; overflow:hidden; font-size:2rem; line-height:2.4; letter-spacing:1rem; color:rgba(212,175,55,.05); text-align:center;}
   .dealer-area > *{position:relative; z-index:1;}
   .dealer-label{font-size:.85rem; color:var(--muted); letter-spacing:2px; margin-bottom:8px;}
@@ -166,6 +167,7 @@
   .badge-lose{background:rgba(224,72,62,.2); color:#ffb3ac;}
   .badge-push{background:rgba(159,184,169,.2); color:var(--muted);}
   .badge-waiting{background:rgba(255,255,255,.08); color:var(--muted);}
+  .badge-dealer{background:linear-gradient(155deg,#e9d9a8,#b8935a); color:#2a2005;}
   .delta{font-family:'Space Mono',monospace; font-weight:700; font-size:.95rem; margin-top:4px;}
   .delta.pos{color:#9ee8b8;} .delta.neg{color:#ffb3ac;} .delta.zero{color:var(--muted);}
 
@@ -207,7 +209,7 @@
   .scene-in{animation:sceneIn .42s cubic-bezier(.2,.8,.2,1) both;}
   @media (max-width:420px){ #app{padding:16px 10px 50px;} .seat{padding:10px 8px;} }
   @media (prefers-reduced-motion:reduce){
-    .scene-in, .deal-in, .seat.turn, .turn-banner.mine, .brand h1{animation:none !important;}
+    .scene-in, .deal-in, .seat.turn, .turn-banner.mine, .brand h1, .dealer-area.turn{animation:none !important;}
   }
 </style>
 </head>
@@ -321,6 +323,7 @@ function normalizeRoom(r){
   if(typeof r.currentIndex!=='number') r.currentIndex = 0;
   if(!r.status) r.status = 'lobby';
   if(typeof r.round!=='number') r.round = 0;
+  if(r.dealerPlayerId===undefined) r.dealerPlayerId = null;
   if(typeof r.turnTimeLimit!=='number') r.turnTimeLimit = TURN_LIMIT_MS;
   if(typeof r.turnStartedAt!=='number') r.turnStartedAt = 0;
   return r;
@@ -532,19 +535,37 @@ function leaveRoom(){
   }).catch(()=>{});
 }
 
+// picks who deals next: the next player clockwise (table/join order) from
+// the current dealer, skipping anyone with 0 chips (they can't cover
+// payouts as dealer). Falls back to the first seat if everyone's broke.
+function pickNextDealer(r){
+  const n = r.players.length;
+  if(n===0) return null;
+  const ids = r.players.map(p=>p.id);
+  const curIdx = r.dealerPlayerId ? ids.indexOf(r.dealerPlayerId) : -1;
+  for(let step=1; step<=n; step++){
+    const idx = (curIdx+step+n)%n;
+    if(r.players[idx].chips>0) return ids[idx];
+  }
+  return ids[0];
+}
+
 async function startRound(){
   const {room} = await txRoom(S.roomCode, r=>{
     if(r.hostId!==S.myId) return false;
     if(r.status!=='lobby' && r.status!=='roundend') return false;
+    if(r.players.length<2) return false; // need a dealer + at least one player
+    r.dealerPlayerId = pickNextDealer(r);
     r.players.forEach(p=>{
       p.hand=[]; p.bet=0; p.result=null; p.lastDelta=0; p.doubled=false;
-      p.status = p.chips>0 ? 'betting' : 'bankrupt';
+      p.status = p.id===r.dealerPlayerId ? 'dealing' : (p.chips>0 ? 'betting' : 'bankrupt');
     });
     r.dealer = {hand:[], revealed:false};
     r.order=[]; r.currentIndex=0;
     r.round = (r.round||0)+1;
     r.status='betting';
-    r.log.unshift(`— รอบที่ ${r.round} —`);
+    const dp = r.players.find(p=>p.id===r.dealerPlayerId);
+    r.log.unshift(`— รอบที่ ${r.round} — 🎩 ${dp?dp.name:'?'} เป็นเจ้ามือรอบนี้`);
   });
   if(room){ S.room=room; S.betAmount=Math.min(MIN_BET*2, room.players.find(p=>p.id===S.myId)?.chips||MIN_BET); render(); }
 }
@@ -557,6 +578,10 @@ function dealRound(r){
   r.dealer.revealed = false;
   active.forEach(p=>{ p.status = isBlackjack(p.hand) ? 'blackjack' : 'playing'; });
   r.order = active.filter(p=>p.status==='playing').map(p=>p.id);
+  // the human dealer plays last, same as house rules — but only if someone
+  // actually bet this round (no players = nothing for the dealer's hand to
+  // matter for, skip straight to settling)
+  if(active.length>0 && r.dealerPlayerId) r.order.push(r.dealerPlayerId);
   r.currentIndex = 0;
   r.log.unshift('🃏 แจกไพ่แล้ว');
   if(r.order.length===0){ settleRound(r); }
@@ -566,14 +591,12 @@ function dealRound(r){
 function settleRound(r){
   r.dealer.revealed = true;
   const dealerBJ = isBlackjack(r.dealer.hand);
-  const anyoneToBeat = r.players.some(p=>p.status==='stand' || p.status==='blackjack');
-  if(anyoneToBeat){
-    let dt = handTotal(r.dealer.hand).total;
-    while(dt < 17){ r.dealer.hand.push(drawCard(r)); dt = handTotal(r.dealer.hand).total; }
-  }
   const dealerTotal = handTotal(r.dealer.hand).total;
   const dealerBust = dealerTotal > 21;
+  const dealerPlayer = r.players.find(p=>p.id===r.dealerPlayerId);
+  let dealerNet = 0; // what the dealer collects (+) or pays out (-) overall
   r.players.forEach(p=>{
+    if(p.id===r.dealerPlayerId) return; // dealer settles against everyone else, not themselves
     if(p.status==='bankrupt' || p.status==='waiting') return;
     let delta=0, result;
     if(p.status==='bust'){ result='lose'; delta=-p.bet; }
@@ -587,9 +610,15 @@ function settleRound(r){
       else { result='push'; delta=0; }
     } else return;
     p.chips += delta; p.lastDelta = delta; p.result = result;
+    dealerNet -= delta; // a player's win comes straight out of the dealer's own chips, and vice versa
   });
+  if(dealerPlayer){
+    dealerPlayer.chips += dealerNet;
+    dealerPlayer.lastDelta = dealerNet;
+    dealerPlayer.result = dealerNet>0 ? 'win' : dealerNet<0 ? 'lose' : 'push';
+  }
   r.status='roundend';
-  r.log.unshift('🎲 เปิดไพ่เจ้ามือ — จบรอบ');
+  r.log.unshift(`🎲 เปิดไพ่เจ้ามือ${dealerPlayer?` (${dealerPlayer.name})`:''} — จบรอบ`);
 }
 
 function advanceTurn(r){
@@ -615,32 +644,44 @@ async function placeBet(amount){
 async function hit(){
   const {room} = await txRoom(S.roomCode, r=>{
     if(r.status!=='playing' || r.order[r.currentIndex]!==S.myId) return false;
-    const me = r.players.find(p=>p.id===S.myId);
-    if(!me || me.status!=='playing') return false;
-    me.hand.push(drawCard(r));
-    const t = handTotal(me.hand).total;
-    if(t>21){ me.status='bust'; advanceTurn(r); }
-    else if(t===21){ me.status='stand'; advanceTurn(r); }
+    if(S.myId===r.dealerPlayerId){
+      r.dealer.hand.push(drawCard(r));
+      const t = handTotal(r.dealer.hand).total;
+      if(t>=21) advanceTurn(r); // 21 or bust — nothing left to decide, move on to settling
+    } else {
+      const me = r.players.find(p=>p.id===S.myId);
+      if(!me || me.status!=='playing') return false;
+      me.hand.push(drawCard(r));
+      const t = handTotal(me.hand).total;
+      if(t>21){ me.status='bust'; advanceTurn(r); }
+      else if(t===21){ me.status='stand'; advanceTurn(r); }
+    }
   });
   if(room){
-    const me = room.players.find(p=>p.id===S.myId);
-    sfx(me && me.status==='bust' ? 'bust' : 'hit');
+    const bust = S.myId===room.dealerPlayerId ? handTotal(room.dealer.hand).total>21
+      : (room.players.find(p=>p.id===S.myId)||{}).status==='bust';
+    sfx(bust ? 'bust' : 'hit');
     S.room=room; render();
   }
 }
 async function stand(){
   const {room} = await txRoom(S.roomCode, r=>{
     if(r.status!=='playing' || r.order[r.currentIndex]!==S.myId) return false;
-    const me = r.players.find(p=>p.id===S.myId);
-    if(!me || me.status!=='playing') return false;
-    me.status='stand';
-    advanceTurn(r);
+    if(S.myId===r.dealerPlayerId){
+      advanceTurn(r);
+    } else {
+      const me = r.players.find(p=>p.id===S.myId);
+      if(!me || me.status!=='playing') return false;
+      me.status='stand';
+      advanceTurn(r);
+    }
   });
   if(room){ S.room=room; render(); }
 }
 async function doubleDown(){
   const {room} = await txRoom(S.roomCode, r=>{
     if(r.status!=='playing' || r.order[r.currentIndex]!==S.myId) return false;
+    if(S.myId===r.dealerPlayerId) return false; // the dealer has no personal bet to double
     const me = r.players.find(p=>p.id===S.myId);
     if(!me || me.status!=='playing' || me.hand.length!==2 || me.chips < me.bet*2) return false;
     me.bet *= 2; me.doubled = true;
@@ -660,6 +701,11 @@ async function autoPlayCheck(){
     if(r.status!=='playing') return false;
     if(Date.now()-r.turnStartedAt < r.turnTimeLimit) return false;
     const curId = r.order[r.currentIndex];
+    if(curId===r.dealerPlayerId){
+      r.log.unshift(`⏱ หมดเวลา — เจ้ามือหมอบอัตโนมัติ`);
+      advanceTurn(r);
+      return;
+    }
     const me = r.players.find(p=>p.id===curId);
     if(!me || me.status!=='playing') return false;
     me.status='stand';
@@ -754,14 +800,14 @@ function rulesModalHtml(){
       <div class="modal" style="max-width:420px; text-align:left;">
         <h3 style="color:var(--gold-soft); margin-bottom:10px; text-align:center;">กติกา Blackjack (21 แต้ม)</h3>
         <div style="font-size:.86rem; line-height:1.6;">
-          <p>เป้าหมาย: ทำแต้มไพ่ในมือให้ <b>ใกล้ 21 ที่สุดโดยไม่เกิน</b> เพื่อชนะเจ้ามือ (AI)</p>
+          <p>เป้าหมาย: ทำแต้มไพ่ในมือให้ <b>ใกล้ 21 ที่สุดโดยไม่เกิน</b> เพื่อชนะเจ้ามือ</p>
           <ul style="margin:8px 0; padding-left:18px;">
             <li>2–10 = แต้มตามหน้าไพ่ / J,Q,K = 10 แต้ม / A = 1 หรือ 11 (เลือกให้ดีที่สุดอัตโนมัติ)</li>
             <li>ไพ่ 2 ใบแรกรวมได้ 21 พอดี = <b>Blackjack</b> จ่าย 3:2</li>
             <li>เกิน 21 = <b>Bust</b> แพ้ทันที ไม่ต้องรอเจ้ามือ</li>
             <li><b>Hit</b> จั่วเพิ่ม / <b>Stand</b> หยุดที่แต้มปัจจุบัน</li>
             <li><b>Double Down</b> ได้เฉพาะตอนมีไพ่ 2 ใบแรก: เพิ่มเดิมพันเป็น 2 เท่า แล้วจั่วอีกแค่ 1 ใบ บังคับหยุด</li>
-            <li>เจ้ามือจั่วจนกว่าจะได้ 17 แต้มขึ้นไปเสมอ (หยุดที่ 17 ทุกกรณี ไม่มีเว้น)</li>
+            <li>🎩 <b>เจ้ามือหมุนเวียนตามเข็มนาฬิกาทุกรอบ</b> — เป็นผู้เล่นจริง ไม่ใช่ AI เจ้ามือตัดสินใจ Hit/Stand เองได้อิสระ (ไม่บังคับ 17) และเสี่ยงจ่าย/เก็บชิปจากผู้เล่นทุกคนด้วยชิปของตัวเองจริงๆ</li>
             <li>เจ้ามือ Bust = ทุกคนที่เหลือชนะ / เสมอแต้ม = ได้เงินเดิมพันคืน (Push)</li>
           </ul>
           <p class="small-note" style="margin-top:10px;">หมายเหตุ: เวอร์ชันนี้ยังไม่รองรับ Split (แยกไพ่คู่) และ Insurance — จะเพิ่มทีหลังถ้าต้องการ</p>
@@ -774,7 +820,8 @@ function statusBadge(status){
   const map = {
     playing:['กำลังเล่น','badge-playing'], stand:['หยุด','badge-stand'], bust:['แตก!','badge-bust'],
     blackjack:['Blackjack!','badge-blackjack'], betting:['กำลังวางเดิมพัน','badge-waiting'],
-    ready:['พร้อมแล้ว','badge-waiting'], waiting:['รอรอบถัดไป','badge-waiting'], bankrupt:['ชิปหมด','badge-bust']
+    ready:['พร้อมแล้ว','badge-waiting'], waiting:['รอรอบถัดไป','badge-waiting'], bankrupt:['ชิปหมด','badge-bust'],
+    dealing:['🎩 เจ้ามือรอบนี้','badge-dealer']
   };
   const [t,c] = map[status] || ['','badge-waiting'];
   return `<span class="status-badge ${c}">${t}</span>`;
@@ -877,11 +924,14 @@ function renderLobby(){
             <span class="chip-cnt" style="margin-left:auto;">🪙 ${p.chips}</span>
           </div>`).join('')}
         <p class="small-note">ทุกคนเริ่มด้วยชิป ${STARTING_CHIPS} · เดิมพันขั้นต่ำ ${MIN_BET}</p>
+        <p class="small-note">🎩 เจ้ามือจะหมุนเวียนตามเข็มนาฬิกาทุกรอบ เสี่ยงจ่าย/เก็บชิปเองจริงๆ</p>
       </div>
       ${isHost ? `
       <div class="btn-row">
-        <button class="btn btn-gold" id="btnStart" style="flex:1;">🎲 เริ่มเกม</button>
-      </div>` : `<p class="small-note" style="text-align:center; margin-top:14px;">รอเจ้าของโต๊ะกดเริ่มเกม...</p>`}
+        <button class="btn btn-gold" id="btnStart" style="flex:1;" ${room.players.length<2?'disabled':''}>🎲 เริ่มเกม</button>
+      </div>
+      ${room.players.length<2? `<p class="small-note" style="text-align:center;">ต้องมีอย่างน้อย 2 คน (เจ้ามือ + ผู้เล่น 1 คน) ถึงจะเริ่มได้</p>` : ''}
+      ` : `<p class="small-note" style="text-align:center; margin-top:14px;">รอเจ้าของโต๊ะกดเริ่มเกม...</p>`}
       <div class="btn-row">
         <button class="btn btn-danger" id="btnLeave" style="flex:1;">ออกจากโต๊ะ</button>
       </div>
@@ -914,7 +964,10 @@ function renderBetting(){
         </span>
       </div>
       <div class="panel" style="text-align:center;">
-        ${me && me.status==='bankrupt' ? `
+        ${me && me.status==='dealing' ? `
+          <h3 style="color:var(--gold-soft);">🎩 คุณเป็นเจ้ามือรอบนี้</h3>
+          <p class="small-note">ไม่ต้องวางเดิมพัน — รอผู้เล่นคนอื่นวางเดิมพันให้ครบก่อน แล้วจะแจกไพ่ ตาคุณจะมาทีหลังสุด</p>
+        ` : me && me.status==='bankrupt' ? `
           <h3 style="color:var(--gold-soft);">ชิปของคุณหมดแล้ว 😢</h3>
           <p class="small-note">รอดูเพื่อนเล่นไปก่อน หรือออกจากโต๊ะแล้วสร้าง/เข้าร่วมโต๊ะใหม่เพื่อเริ่มชิปใหม่</p>
         ` : me && me.status==='ready' ? `
@@ -975,10 +1028,16 @@ function renderPlaying(){
   const me = room.players.find(p=>p.id===S.myId);
   const curId = room.order[room.currentIndex];
   const isMyTurn = curId === S.myId;
+  const iAmDealer = S.myId===room.dealerPlayerId;
+  const dealerPlayer = room.players.find(p=>p.id===room.dealerPlayerId);
+  // a real dealer sees their own full hand at all times (that's just... their
+  // hand); everyone else only sees it once room.dealer.revealed flips true
+  const showDealerFull = room.dealer.revealed || iAmDealer;
   const dealerTotal = handTotal(room.dealer.hand).total;
   const pct = Math.max(0, 100 - ((Date.now()-room.turnStartedAt)/room.turnTimeLimit)*100);
   const myTotal = me ? handTotal(me.hand).total : 0;
-  const canDouble = isMyTurn && me && me.hand.length===2 && me.chips >= me.bet*2;
+  const canDouble = isMyTurn && !iAmDealer && me && me.hand.length===2 && me.chips >= me.bet*2;
+  const dealerTurnActive = curId===room.dealerPlayerId;
   app.innerHTML = `
     <div class="${sceneAnim}">
       <div class="top-strip">
@@ -988,20 +1047,24 @@ function renderPlaying(){
           <button id="btnRules" class="btn btn-ghost" style="padding:4px 10px; font-size:.75rem;">กติกา</button>
         </span>
       </div>
-      <div class="dealer-area">
-        <div class="dealer-label">เจ้ามือ</div>
+      <div class="dealer-area ${dealerTurnActive?'turn':''}">
+        <div class="dealer-label">🎩 เจ้ามือ${dealerPlayer?` — ${esc(dealerPlayer.name)}${iAmDealer?' (คุณ)':''}`:''}</div>
         <div class="hand-row">
-          ${room.dealer.hand.map((c,i)=> i===1 ? backCardEl(false, c.id) : cardEl(c,false)).join('')}
+          ${room.dealer.hand.map((c,i)=> (i===1 && !showDealerFull) ? backCardEl(false, c.id) : cardEl(c,false)).join('')}
         </div>
-        <div class="hand-total">${room.dealer.hand.length? '?' : ''}</div>
+        <div class="hand-total">${showDealerFull ? dealerTotal : (room.dealer.hand.length? '?' : '')}</div>
       </div>
       ${curId ? `
       <div class="turn-banner ${isMyTurn?'mine':''}">
-        ${isMyTurn ? 'ตาของคุณ — Hit หรือ Stand?' : `รอ ${(room.players.find(p=>p.id===curId)||{}).name||'ผู้เล่น'} ตัดสินใจ...`}
+        ${isMyTurn
+          ? (iAmDealer ? '🎩 ตาคุณ — เล่นในฐานะเจ้ามือ (Hit หรือ Stand?)' : 'ตาของคุณ — Hit หรือ Stand?')
+          : dealerTurnActive
+            ? `รอ ${esc(dealerPlayer?.name||'เจ้ามือ')} (เจ้ามือ) ตัดสินใจ...`
+            : `รอ ${(room.players.find(p=>p.id===curId)||{}).name||'ผู้เล่น'} ตัดสินใจ...`}
         <div class="timer-bar"><div class="timer-fill" id="turnTimerFill" style="width:${pct}%"></div></div>
       </div>` : ''}
       <div class="seats-ring">
-        ${room.players.filter(p=>p.status!=='waiting' && p.status!=='bankrupt').map(p=>{
+        ${room.players.filter(p=>p.status!=='waiting' && p.status!=='bankrupt' && p.id!==room.dealerPlayerId).map(p=>{
           const isTurn = p.id===curId;
           const total = handTotal(p.hand).total;
           return `
@@ -1037,6 +1100,7 @@ function renderRoundEnd(){
   const room = S.room;
   const isHost = room.hostId === S.myId;
   const dealerTotal = handTotal(room.dealer.hand).total;
+  const dealerPlayer = room.players.find(p=>p.id===room.dealerPlayerId);
   // play one settle sound based on my own result, once per round
   if(S._lastSettledRound !== room.round){
     S._lastSettledRound = room.round;
@@ -1057,12 +1121,16 @@ function renderRoundEnd(){
         </span>
       </div>
       <div class="dealer-area">
-        <div class="dealer-label">เจ้ามือ</div>
+        <div class="dealer-label">🎩 เจ้ามือ${dealerPlayer?` — ${esc(dealerPlayer.name)}${dealerPlayer.id===S.myId?' (คุณ)':''}`:''}</div>
         <div class="hand-row">${room.dealer.hand.map(c=>cardEl(c,false)).join('')}</div>
         <div class="hand-total">${dealerTotal}${dealerTotal>21?' (Bust!)':''}</div>
+        ${dealerPlayer ? `
+        <div class="delta ${dealerPlayer.lastDelta>0?'pos':dealerPlayer.lastDelta<0?'neg':'zero'}" style="margin-top:4px;">
+          ${dealerPlayer.lastDelta>0?`+${dealerPlayer.lastDelta}`:dealerPlayer.lastDelta} 🪙 (รวม ${dealerPlayer.chips})
+        </div>` : ''}
       </div>
       <div class="seats-ring">
-        ${room.players.filter(p=>p.status!=='waiting' && p.status!=='bankrupt').map(p=>{
+        ${room.players.filter(p=>p.status!=='waiting' && p.status!=='bankrupt' && p.id!==room.dealerPlayerId).map(p=>{
           const total = handTotal(p.hand).total;
           const deltaCls = p.lastDelta>0?'pos':p.lastDelta<0?'neg':'zero';
           const deltaTxt = p.lastDelta>0? `+${p.lastDelta}` : p.lastDelta;
