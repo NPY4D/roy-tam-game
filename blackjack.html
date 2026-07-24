@@ -730,10 +730,24 @@ function gameSwitcherHtml(){
       <span class="game-switch-btn disabled"><span class="icon">🃏</span><span>โป๊กเกอร์</span><i>เร็วๆนี้</i></span>
     </div>`;
 }
+// The game re-renders every ~1s (turn countdown), which used to re-trigger
+// every card's fly-in animation on every tick — cards would visibly flicker/
+// jump each second, which is also what made it feel like hands were
+// shuffling between players. seenCardIds remembers which card ids have
+// already played their entrance once, so it only fires for genuinely new
+// cards (a fresh hit, a new deal) and everything else renders static.
+const seenCardIds = new Set();
 function cardEl(card, small){
-  return `<div class="card ${isRed(card.suit)?'red':''} ${small?'small':''} deal-in"><div>${card.rank}</div><div class="mid">${card.suit}</div><div style="align-self:flex-end; transform:rotate(180deg)">${card.rank}</div></div>`;
+  const isNew = card.id && !seenCardIds.has(card.id);
+  if(card.id) seenCardIds.add(card.id);
+  return `<div class="card ${isRed(card.suit)?'red':''} ${small?'small':''} ${isNew?'deal-in':''}"><div>${card.rank}</div><div class="mid">${card.suit}</div><div style="align-self:flex-end; transform:rotate(180deg)">${card.rank}</div></div>`;
 }
-function backCardEl(small){ return `<div class="card back ${small?'small':''} deal-in"></div>`; }
+function backCardEl(small, cardId){
+  const key = cardId ? 'back:'+cardId : null;
+  const isNew = key && !seenCardIds.has(key);
+  if(key) seenCardIds.add(key);
+  return `<div class="card back ${small?'small':''} ${isNew?'deal-in':''}"></div>`;
+}
 function rulesModalHtml(){
   return `
     <div class="modal-bg">
@@ -977,7 +991,7 @@ function renderPlaying(){
       <div class="dealer-area">
         <div class="dealer-label">เจ้ามือ</div>
         <div class="hand-row">
-          ${room.dealer.hand.map((c,i)=> i===1 ? backCardEl(false) : cardEl(c,false)).join('')}
+          ${room.dealer.hand.map((c,i)=> i===1 ? backCardEl(false, c.id) : cardEl(c,false)).join('')}
         </div>
         <div class="hand-total">${room.dealer.hand.length? '?' : ''}</div>
       </div>
