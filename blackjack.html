@@ -1001,16 +1001,33 @@ function leaveRoom(){
     if(r.status==='playing') return false; // don't disturb an active hand — the turn timer covers an abandoned turn
     const meP = r.players.find(p=>p.id===myId);
     const myName = meP ? meP.name : 'ผู้เล่น';
+    // the human dealer bailing mid-betting (before any hand is dealt) would
+    // otherwise leave dealerPlayerId pointing at a player who no longer
+    // exists — settleRound then can't find them to charge/pay, so every
+    // player's win/loss just gets applied with no counterparty. Cancel the
+    // round back to the lobby instead; nobody has paid anything in yet.
+    const wasDealer = r.status==='betting' && r.dealerPlayerId===myId;
     r.players = r.players.filter(p=>p.id!==myId);
     if(r.players.length===0) return 'DELETE';
     if(r.hostId===myId){ r.hostId=r.players[0].id; r.log.unshift(`👑 ${r.players[0].name} เป็นเจ้าของโต๊ะคนใหม่`); }
     r.log.unshift(`${myName} ออกจากโต๊ะ`);
+    if(wasDealer){
+      r.status='lobby'; r.dealerPlayerId=null; r.order=[]; r.currentIndex=0;
+      r.players.forEach(p=>{ p.status='waiting'; p.bet=0; p.hand=[]; p.result=null; p.lastDelta=0; p.doubled=false; });
+      r.log.unshift(`🎩 เจ้ามือออกจากโต๊ะกลางรอบ — ยกเลิกรอบนี้`);
+    } else if(r.status==='betting' && !r.players.some(p=>p.status==='betting')){
+      // the leaver was the last one still deciding a bet — same trigger
+      // placeBet() uses, otherwise the table stalls in 'betting' forever
+      dealRound(r);
+    }
   }).catch(()=>{});
 }
 
 // picks who deals next: the next player clockwise (table/join order) from
-// the current dealer, skipping anyone with 0 chips (they can't cover
-// payouts as dealer). Falls back to the first seat if everyone's broke.
+// the current dealer, skipping anyone who can't cover even one min bet as
+// dealer (bettingExposure reserves 1.5x per bet, so MIN_BET*1.5 is the
+// smallest bankroll that lets any player bet at all). Falls back to the
+// first seat if nobody qualifies.
 function pickNextDealer(r){
   const n = r.players.length;
   if(n===0) return null;
@@ -1018,7 +1035,7 @@ function pickNextDealer(r){
   const curIdx = r.dealerPlayerId ? ids.indexOf(r.dealerPlayerId) : -1;
   for(let step=1; step<=n; step++){
     const idx = (curIdx+step+n)%n;
-    if(r.players[idx].chips>0) return ids[idx];
+    if(r.players[idx].chips>=MIN_BET*1.5) return ids[idx];
   }
   return ids[0];
 }
@@ -1559,7 +1576,7 @@ function renderAuth(){
         <div class="btn-row">
           <button class="btn btn-gold" id="btnAuthSubmit" style="flex:1;">${mode==='login'?'เข้าสู่ระบบ':'สมัครสมาชิก'}</button>
         </div>
-        <p class="small-note" style="margin-top:12px;">หมายเหตุ: รหัสผ่านถูกเก็บแบบ hash ไว้ในฐานข้อมูลกลาง เหมาะกับเล่นกันเองในกลุ่มเพื่อน แต่ไม่ใช่ระบบความปลอดภัยระดับธนาคาร อย่าใช้รหัสผ่านซ้ำกับบัญชีสำคัญอื่นๆ</p>
+        <p class="small-note" style="margin-top:12px;">หมายเหตุ: อย่าใช้รหัสผ่านซ้ำกับบัญชีสำคัญอื่นๆ</p>
       </div>
     </div>
   `;
@@ -1740,7 +1757,7 @@ function renderBetting(){
       dealerCapNote = `🎩 เจ้ามือมีชิปจำกัด — เดิมพันได้สูงสุด ${maxBet} ชิปรอบนี้ (กันเจ้ามือติดลบ)`;
     }
   }
-  if(S.betAmount > maxBet) S.betAmount = Math.min(MIN_BET, maxBet);
+  if(S.betAmount > maxBet) S.betAmount = maxBet;
   app.innerHTML = `
     <div class="${sceneAnim}">
       <div class="top-strip">
