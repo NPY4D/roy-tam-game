@@ -776,6 +776,7 @@ async function txRoom(code, mutator){
       const room = normalizeRoom(raw);
       const outcome = mutator(room);
       if(outcome===false) return; // returning undefined aborts the transaction, no write
+      if(outcome==='DELETE') return null; // wipe the room node entirely
       return room;
     });
     const room = result.snapshot.exists() ? normalizeRoom(result.snapshot.val()) : null;
@@ -801,6 +802,8 @@ const S = {
   showManage:false,
   showJoinBox:false,
   publicRooms:undefined,
+  _presenceCode:null,
+  _presenceRef:null,
   swapPending:null,
   spyPending:null,
   mulliganPending:null,
@@ -821,8 +824,37 @@ let sceneAnim = '';
 const app = document.getElementById('app');
 
 /* ---------- real-time listener ---------- */
+// Presence: separate from room data on purpose. `rooms/$code/players` only
+// changes when someone explicitly acts (join/leave/play), so it has no way
+// of knowing a tab was just closed or the wifi died. Firebase's
+// onDisconnect() is the actual fix — it's a promise the *server* keeps and
+// fulfills the moment it notices the socket drop, closed tab, crash,
+// whatever. We just mark ourselves present at presence/$code/$myId and let
+// the server clear it when we vanish, so the public room list (which
+// checks presence, not the stale players array) stops showing ghost rooms.
+let presenceConnRef = null;
+function trackPresence(code){
+  untrackPresence(); // only one room's presence is ever tracked per session
+  const myRef = db.ref(`presence/${code}/${S.myId}`);
+  presenceConnRef = db.ref('.info/connected');
+  presenceConnRef.on('value', snap=>{
+    if(snap.val()===true){
+      myRef.onDisconnect().remove();
+      myRef.set(true);
+    }
+  });
+  S._presenceCode = code;
+  S._presenceRef = myRef;
+}
+function untrackPresence(){
+  if(presenceConnRef){ presenceConnRef.off(); presenceConnRef=null; }
+  if(S._presenceRef){ S._presenceRef.onDisconnect().cancel(); S._presenceRef.remove(); S._presenceRef=null; }
+  S._presenceCode = null;
+}
+
 function startPolling(){
   stopPolling();
+  trackPresence(S.roomCode);
   // live updates: fires instantly whenever anyone writes to this room
   db.ref('rooms/'+S.roomCode).on('value', snap=>{
     if(!snap.exists()) return;
@@ -846,6 +878,7 @@ function startPolling(){
 function stopPolling(){
   if(S.pollTimer){ clearInterval(S.pollTimer); S.pollTimer=null; }
   if(S.roomCode){ db.ref('rooms/'+S.roomCode).off(); }
+  untrackPresence();
 }
 
 /* ---------- game helpers ---------- */
@@ -979,13 +1012,19 @@ async function createRoom(){
 // permission error and we show a hint instead of crashing.
 async function fetchPublicRooms(){
   try{
-    const snap = await db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(20).once('value');
+    const [roomsSnap, presenceSnap] = await Promise.all([
+      db.ref('rooms').orderByChild('status').equalTo('lobby').limitToLast(20).once('value'),
+      db.ref('presence').once('value')
+    ]);
+    const presence = presenceSnap.val() || {};
     const rooms = [];
-    snap.forEach(child=>{
+    roomsSnap.forEach(child=>{
       const r = child.val();
-      if(r && Array.isArray(r.players) && r.players.length>0 && r.players.length<6){
+      const code = r.code || child.key;
+      const onlineCount = presence[code] ? Object.keys(presence[code]).length : 0;
+      if(r && Array.isArray(r.players) && r.players.length>0 && r.players.length<6 && onlineCount>0){
         const host = r.players.find(p=>p.id===r.hostId) || r.players[0];
-        rooms.push({code: r.code || child.key, hostName: host.name||'?', count:r.players.length, mode:r.mode});
+        rooms.push({code, hostName: host.name||'?', count:r.players.length, mode:r.mode});
       }
     });
     rooms.reverse();
@@ -1366,9 +1405,27 @@ async function kickPlayer(targetId){
 }
 
 function leaveRoom(){
+  const code = S.roomCode;
+  const myId = S.myId;
   stopPolling();
   clearSession();
   S.roomCode=''; S.room=null; S.screen='landing'; render();
+  if(!code) return;
+  // best-effort server-side cleanup so this room doesn't linger with a
+  // stale seat: if we were the last one in the lobby, delete the room; if
+  // we were the host, hand it to whoever's next instead of leaving it headless
+  txRoom(code, r=>{
+    if(r.status!=='lobby') return false; // don't touch rooms already in play
+    const meP = r.players.find(p=>p.id===myId);
+    const myName = meP ? meP.name : 'ผู้เล่น';
+    r.players = r.players.filter(p=>p.id!==myId);
+    if(r.players.length===0) return 'DELETE';
+    if(r.hostId===myId){
+      r.hostId = r.players[0].id;
+      r.log.unshift(`👑 ${r.players[0].name} กลายเป็นเจ้าของห้องคนใหม่`);
+    }
+    r.log.unshift(`${myName} ออกจากห้อง`);
+  }).catch(()=>{});
 }
 
 /* ---------- rendering ---------- */
