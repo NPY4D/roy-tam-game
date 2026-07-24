@@ -891,6 +891,7 @@ const S = {
   _lastSyncedRound:-1,
   _dealerRevealRound:-1, _dealerRevealStep:0, _dealerRevealDone:false, _resultSoundPlayedRound:-1, _fxPlayedRound:-1,
   _roundEndTimer:null, _roundEndDeadline:0,
+  _revealHoldActive:false, _pendingRevealRoom:null,
   showMinigameModal:false,
   adminLoggedIn:false, adminErr:'', adminUsers:undefined, _adminPassVal:''
 };
@@ -898,13 +899,45 @@ let sceneAnim = '';
 const app = document.getElementById('app');
 
 /* ---------- real-time listener ---------- */
+// settleRound (server-side, atomic) draws the AI dealer's whole hand and
+// flips r.status straight to 'roundend' in the very same instant a
+// player's hit/stand/double ends the last turn — so without this, whoever
+// just busted or hit 21 (or the human dealer finishing their own hand)
+// never actually sees that result: the screen cuts straight to the reveal.
+// So every 'playing'->'roundend' transition is held here for a beat first,
+// showing the final table state (dealer's hole card still hidden, unless
+// you *are* the dealer) before handing off to the real reveal screen.
+const REVEAL_HOLD_MS = 900;
+function finalizeRoomUpdate(fresh){
+  S.room = fresh;
+  if(fresh.status==='lobby') S.screen='lobby';
+  else if(fresh.status==='betting') S.screen='betting';
+  else if(fresh.status==='playing') S.screen='playing';
+  else if(fresh.status==='roundend') S.screen='roundend';
+  render();
+}
+function applyRoomUpdate(fresh){
+  if(S._revealHoldActive){ S._pendingRevealRoom = fresh; return; } // hold in progress — just queue the freshest data
+  const enteringRoundEnd = fresh.status==='roundend' && S.room && S.room.status==='playing';
+  if(!enteringRoundEnd){ finalizeRoomUpdate(fresh); return; }
+  S._revealHoldActive = true;
+  S._pendingRevealRoom = fresh;
+  const iAmDealer = S.myId===fresh.dealerPlayerId;
+  const holdRoom = JSON.parse(JSON.stringify(fresh));
+  if(!iAmDealer){ holdRoom.dealer.hand = holdRoom.dealer.hand.slice(0,2); holdRoom.dealer.revealed=false; }
+  holdRoom.currentIndex = holdRoom.order.length; // past the end — no one's "turn", hides the turn banner/buttons
+  S.room = holdRoom; S.screen='playing'; render();
+  setTimeout(()=>{
+    S._revealHoldActive = false;
+    finalizeRoomUpdate(S._pendingRevealRoom);
+  }, REVEAL_HOLD_MS);
+}
 function startPolling(){
   stopPolling();
   trackPresence(S.roomCode);
   db.ref('bjrooms/'+S.roomCode).on('value', snap=>{
     if(!snap.exists()) return;
     const fresh = normalizeRoom(snap.val());
-    S.room = fresh;
     const me = fresh.players.find(p=>p.id===S.myId);
     if(me && me.status==='bankrupt' && !S._bankruptNotified){
       S._bankruptNotified = true;
@@ -914,11 +947,7 @@ function startPolling(){
       S._lastSyncedRound = fresh.round;
       syncWalletChips(me.chips);
     }
-    if(fresh.status==='lobby') S.screen='lobby';
-    else if(fresh.status==='betting') S.screen='betting';
-    else if(fresh.status==='playing') S.screen='playing';
-    else if(fresh.status==='roundend') S.screen='roundend';
-    render();
+    applyRoomUpdate(fresh);
   });
   // local 1s tick: advance the timer bar + trigger auto-stand on timeout,
   // without a full re-render (keeps animations from restarting/flickering)
@@ -1236,7 +1265,7 @@ async function hit(){
       : (room.players.find(p=>p.id===S.myId)||{}).status==='bust';
     maybeShuffleSfx(room);
     sfx(bust ? 'bust' : 'hit');
-    S.room=room; render();
+    applyRoomUpdate(room);
   }
 }
 async function stand(){
@@ -1251,7 +1280,7 @@ async function stand(){
       advanceTurn(r);
     }
   });
-  if(room){ S.room=room; render(); }
+  if(room){ applyRoomUpdate(room); }
 }
 async function doubleDown(){
   const {room} = await txRoom(S.roomCode, r=>{
@@ -1274,7 +1303,7 @@ async function doubleDown(){
     const me = room.players.find(p=>p.id===S.myId);
     maybeShuffleSfx(room);
     sfx(me && me.status==='bust' ? 'bust' : 'hit');
-    S.room=room; render();
+    applyRoomUpdate(room);
   }
 }
 async function autoPlayCheck(){
@@ -1293,7 +1322,7 @@ async function autoPlayCheck(){
     r.log.unshift(`⏱ หมดเวลา — ${me.name} หมอบอัตโนมัติ`);
     advanceTurn(r);
   });
-  if(room){ S.room=room; render(); }
+  if(room){ applyRoomUpdate(room); }
 }
 
 /* ---------- public rooms list (silent auto-refresh, no flicker) ---------- */
