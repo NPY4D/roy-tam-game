@@ -1125,11 +1125,35 @@ function dealRound(r){
   else{ r.status='playing'; r.turnStartedAt=Date.now(); }
 }
 
-// standard house rule for the AI dealer: hit until 17+, stand on all 17s
-// (including soft 17). Natural blackjack on the first two cards never draws.
+// among players who actually chose to Stand (i.e. whose outcome depends on
+// how the dealer's total lands — bust/blackjack players are already settled
+// regardless of what the dealer does), count how many the dealer is
+// currently ahead of vs behind if it stopped drawing right now.
+function dealerStandTally(r, dealerTotal){
+  let winners=0, losers=0;
+  r.players.forEach(p=>{
+    if(p.id===r.dealerPlayerId || p.status!=='stand') return;
+    const pt = handTotal(p.hand).total;
+    if(pt>dealerTotal) winners++;
+    else if(pt<dealerTotal) losers++;
+  });
+  return { winners, losers };
+}
+// hits until 17+ same as the standard house rule (never hits on any 17,
+// including soft 17), but with one twist: below 17 it will also stop early
+// once it's already beating more standing players than it's losing to —
+// no reason to risk busting (turning an already-winning hand into a loss
+// against everyone) just to chase a marginally better number. Natural
+// blackjack on the first two cards never draws at all.
 function dealerAutoPlay(r){
   if(isBlackjack(r.dealer.hand)) return;
-  while(handTotal(r.dealer.hand).total < 17){
+  while(true){
+    const total = handTotal(r.dealer.hand).total;
+    if(total>=17) break;
+    if(total>=12){
+      const {winners, losers} = dealerStandTally(r, total);
+      if(losers>winners) break; // already ahead of more players than behind — good enough, stop here
+    }
     r.dealer.hand.push(drawCard(r));
   }
 }
@@ -1481,7 +1505,7 @@ function rulesModalHtml(){
             <li>เกิน 21 = <b>Bust</b> แพ้ทันที ไม่ต้องรอเจ้ามือ</li>
             <li><b>Hit</b> จั่วเพิ่ม / <b>Stand</b> หยุดที่แต้มปัจจุบัน</li>
             <li><b>Double Down</b> ได้เฉพาะตอนมีไพ่ 2 ใบแรก: เพิ่มเดิมพันเป็น 2 เท่า แล้วจั่วอีกแค่ 1 ใบ บังคับหยุด</li>
-            <li>โต๊ะเลือกได้ 2 โหมด: <b>🎩 เจ้ามือหมุนเวียน</b> — เป็นผู้เล่นจริง ตัดสินใจ Hit/Stand เองได้อิสระ เสี่ยงจ่าย/เก็บชิปจากผู้เล่นทุกคนด้วยชิปของตัวเองจริงๆ หรือ <b>🤖 เจ้ามือ AI</b> — เล่นตามกติกามาตรฐาน ไม่ต้องมีคนนั่งเป็นเจ้ามือ</li>
+            <li>โต๊ะเลือกได้ 2 โหมด: <b>🎩 เจ้ามือหมุนเวียน</b> — เป็นผู้เล่นจริง ตัดสินใจ Hit/Stand เองได้อิสระ เสี่ยงจ่าย/เก็บชิปจากผู้เล่นทุกคนด้วยชิปของตัวเองจริงๆ หรือ <b>🤖 เจ้ามือ AI</b> — ไม่ต้องมีคนนั่งเป็นเจ้ามือ จั่วจนกว่าจะได้ 17+ เหมือนกติกามาตรฐาน แต่ถ้าแต้มปัจจุบัน (ตั้งแต่ 12 ขึ้นไป) ชนะผู้เล่นที่หยุดแล้วมากกว่าที่แพ้อยู่ จะหยุดจั่วก่อน 17 เลย ไม่เสี่ยงบอดทิ้งเปล่าๆ</li>
             <li>เจ้ามือ Bust = ทุกคนที่เหลือชนะ / เสมอแต้ม = ได้เงินเดิมพันคืน (Push)</li>
             <li>โหมดเจ้ามือหมุนเวียน: ระบบจะจำกัดวงเงินเดิมพัน/Double Down ไม่ให้เกินชิปที่เจ้ามือมี กันไม่ให้เจ้ามือติดลบถ้าทุกคนชนะพร้อมกัน</li>
             <li>โหมดเจ้ามือหมุนเวียน: ระหว่างรอบ เจ้ามือจะ<b>ไม่เห็นไพ่/แต้มของผู้เล่นคนอื่น</b> (เห็นแค่หน้าไพ่คว่ำ) กันเจ้ามือได้เปรียบจากการรู้ไพ่ก่อนตัดสินใจเล่นของตัวเอง — จะเปิดให้เห็นพร้อมกันตอนจบรอบ</li>
